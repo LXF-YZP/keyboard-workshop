@@ -1,0 +1,10 @@
+[
+  {
+    "path": "boards/shields/test_board/test_board.overlay",
+    "content": "#include <dt-bindings/zmk/matrix_transform.h>\n#include <dt-bindings/gpio/gpio.h>\n#include <physical_layouts.dtsi>\n\n/ {\n    chosen { zmk,kscan = &kscan0; zmk,physical-layout = &physical_layout0; };\n    kscan0: kscan {\n        compatible = \"zmk,kscan-gpio-matrix\";\n        diode-direction = \"col2row\";\n        row-gpios = <&pro_micro 21 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>, <&pro_micro 20 (GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)>;\n        col-gpios = <&pro_micro 0 GPIO_ACTIVE_HIGH>, <&pro_micro 1 GPIO_ACTIVE_HIGH>, <&pro_micro 2 GPIO_ACTIVE_HIGH>;\n    };\n    default_transform: matrix_transform_0 {\n        compatible = \"zmk,matrix-transform\";\n        rows = <2>;\n        columns = <3>;\n        map = <RC(0, 0) RC(1, 2)>;\n    };\n    physical_layout0: physical_layout_0 {\n        compatible = \"zmk,physical-layout\";\n        display-name = \"Default\";\n        transform = <&default_transform>;\n        kscan = <&kscan0>;\n        keys = <&key_physical_attrs 100 100 0 0 0 0 0>,\n            <&key_physical_attrs 100 100 100 100 (-3000) 150 150>;\n    };\n};\n"
+  },
+  {
+    "path": "config/test_board.keymap",
+    "content": "#include <behaviors.dtsi>\n#include <dt-bindings/zmk/keys.h>\n\n/ {\n    keymap {\n        compatible = \"zmk,keymap\";\n        layer_0 {\n            display-name = \"Base\";\n            bindings = <&kp A &kp B>;\n        };\n        layer_1 {\n            display-name = \"Lower\";\n            bindings = <&mo 0 &trans>;\n        };\n    };\n};\n"
+  }
+]

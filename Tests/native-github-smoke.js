@@ -1,0 +1,46 @@
+const assert=(value,message)=>{if(!value)throw Error(message);};
+const click=id=>$(id).click();
+const receive=async payload=>window.nativeEvent({event:'githubState',payload});
+const project={version:1,name:'云端编译测试',keys:[KB.key({x:0,y:0,label:'A'}),KB.key({x:1,y:0,label:'B'})],firmware:FW.sanitizeFirmware({target:'qmk',id:'cloud_test',controller:'rp2040',rows:1,cols:2,rowPins:[0],colPins:[1,2],layers:[{name:'Base'}]})};
+for(const [i,k] of project.keys.entries())k.fw={row:0,col:i,bindings:[{t:'kc',k:i?'B':'A',m:[]}]};
+Workshop.loadText(JSON.stringify(project));setView('firmware');
+for(const [id,value] of [['firmwareVid','beef'],['firmwarePid','23']]){$(id).value=value;$(id).dispatchEvent(new Event('change'));}
+assert(state.firmware.usb.vid==='0xBEEF'&&state.firmware.usb.pid==='0x0023','GitHub uses edited USB IDs');
+assert(!FW.validate(state).errors.length,'valid test fixture');
+const unchanged=JSON.stringify(Workshop.getState());
+click('uploadGitHub');assert($('githubDialog').open,'GitHub dialog opens');
+assert($('githubPublish').disabled&&$('githubPrivate').checked,'disconnected blocked and private default');
+click('githubConnect');
+const connected={connected:true,login:'tester',busy:false,message:'已连接 tester。请选择仓库并上传固件。',repositories:[{name:'existing-qmk',keyboard:'cloud_test',target:'qmk'},{name:'other-board',keyboard:'other',target:'qmk'},{name:'wrong-target',keyboard:'cloud_test',target:'zmk'}]};
+await receive(connected);
+assert([...$('githubRepository').options].map(o=>o.value).join(',')===',existing-qmk','only matching repositories shown');
+assert(!$('githubPublish').disabled,'connected can upload');
+$('githubRepoName').value='../unsafe';$('githubRepoName').dispatchEvent(new Event('input'));assert($('githubPublish').disabled,'invalid repository name blocked');
+$('githubRepoName').value='cloud_test-qmk';$('githubRepoName').dispatchEvent(new Event('input'));
+// 对话框打开后修改工程，提交仍须使用进入对话框时生成的独立快照。
+const pending=JSON.stringify(githubPending.files);state.keys[0].fw.bindings[0]={t:'kc',k:'Z',m:[]};
+click('githubPublish');assert(githubState.busy&&$('githubPublish').disabled,'duplicate submit blocked');
+const job={owner:'tester',repo:'cloud_test-qmk',sha:'c'.repeat(40),branch:'main',status:'queued',startedAt:Date.now()/1000,snapshotId:githubPending.snapshotId};
+await receive({...connected,repositories:[...connected.repositories,{name:'cloud_test-qmk',keyboard:'cloud_test',target:'qmk'}],job,message:'已上传，正在等待 GitHub Actions。'});
+assert($('githubRepository').value==='cloud_test-qmk'&&$('githubNewFields').hidden,'new repository selected for future updates');
+assert($('githubDownload').disabled&&$('githubJobStatus').textContent==='排队中 · 历史快照','queued stale snapshot cannot download');
+$('githubRepository').value='existing-qmk';$('githubRepository').dispatchEvent(new Event('change'));click('githubPublish');
+await receive({...connected,job:{...job,status:'in_progress'},message:'GitHub 正在编译固件…'});
+assert($('githubJobStatus').textContent==='编译中 · 历史快照','running snapshot status');
+await receive({...connected,job:{...job,status:'completed',conclusion:'failure',runID:123},message:'编译未成功，请打开 GitHub 查看日志。',error:true});
+assert($('githubDownload').disabled&&$('githubMessage').classList.contains('github-error')&&!$('githubOpenRun').disabled,'failure opens logs only');
+click('githubOpenRun');click('githubRefresh');
+await receive({...connected,job:{...job,status:'completed',conclusion:'success',artifactID:77,runID:123},message:'编译成功，可以下载固件。'});
+assert(!$('githubDownload').disabled&&!$('githubMessage').classList.contains('github-error'),'success can download');
+assert($('githubJobStatus').textContent==='编译成功 · 历史快照'&&$('githubJobInfo').textContent.includes('当前工程已变化'),'old success presented as current');click('githubDownload');
+await receive({...connected,job:{...job,status:'completed',conclusion:'success',runID:123},message:'编译成功，固件尚未就绪或已过期；可打开 GitHub 查看。'});
+assert($('githubDownload').disabled,'missing or expired artifact blocked');
+click('closeGitHub');
+// 恢复测试修改；GitHub 的连接、状态和仓库信息均未进入工程。
+state.keys[0].fw.bindings[0]={t:'kc',k:'A',m:[]};sync();assert(JSON.stringify(Workshop.getState())===unchanged,'project untouched by GitHub state');
+assert($('githubJobStatus').textContent==='编译成功'&&$('githubJobInfo').textContent.includes('与当前工程快照一致'),'current snapshot did not refresh');
+state.firmware.rowPins=[null];sync();click('uploadGitHub');assert(githubPending===null&&$('githubPublish').disabled,'invalid configuration can inspect previous job without upload');click('closeGitHub');
+state.firmware.rowPins=[0];sync();click('uploadGitHub');
+await receive({...connected,job:{...job,status:'completed',conclusion:'success',artifactID:77,runID:123},message:'编译成功，可以下载固件。'});
+assert(JSON.stringify(githubPending.files)===pending,'source snapshot deterministic');
+return 'GitHub UI: account actions, repo filtering/names, private default, immutable upload snapshot, duplicate submit guard, updates, status/logs/download, expired artifacts, project isolation, invalid-config status access';
