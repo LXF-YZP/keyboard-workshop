@@ -78,6 +78,32 @@ test('42-key rotated split suggests 4x6 per hand, mirrors columns, excludes deca
 test('split round trip preserves all settings and nested objects remain independent',()=>{const p=project();p.firmware.split.pointing.enabled=true;const saved=FW.normalizeProject(p),again=FW.normalizeProject(JSON.parse(JSON.stringify(saved)));assert.deepEqual(again,saved);again.firmware.split.right.rowPins[0]=29;again.keys[0].fw.side='left';assert.equal(saved.firmware.split.right.rowPins[0],4);assert.equal(saved.keys[0].fw.side,'right');assert.equal(FW.matrixLabel(saved.keys[0],saved.firmware),'右 R0 C0');});
 
 function fullDuplex(){const p=project();Object.assign(p.firmware.split,{serialMode:'full_duplex',serialRxPin:12});return p;}
+test('split wiring SVG separates both hands and shows crossed TX/RX and master side',()=>{
+  const p=fullDuplex();p.firmware.split.master='right';
+  const svg=FW.wiringDiagram(p);
+  for(const term of ['左手','右手  ·  2 键  ·  主手','左 TX（GP1）→ 右 RX（GP12）','左 RX（GP12）← 右 TX（GP1）','GND 共地','R0 / C0'])assert.ok(svg.includes(term),term);
+  const z=project('zmk'),wireless=FW.wiringDiagram(z);
+  assert.ok(wireless.includes('左右手通过蓝牙通信'));
+  assert.ok(!wireless.includes('左 TX'));
+});
+test('right split wiring mirrors display columns while preserving logical matrix addresses and GPIO mapping',()=>{
+  const p=project();p.firmware.rows=1;p.firmware.cols=6;p.firmware.rowPins=[4];p.firmware.colPins=[8,9,10,11,12,13];
+  p.firmware.split.right={rowPins:[5],colPins:[14,15,16,17,18,19]};
+  p.keys=[
+    KB.key({id:'left-0',label:'LeftC0',fw:{side:'left',row:0,col:0}}),
+    KB.key({id:'right-5',label:'ThumbC5',fw:{side:'right',row:0,col:5}}),
+    KB.key({id:'right-3',label:'ThumbC3',fw:{side:'right',row:0,col:3}}),
+    KB.key({id:'right-0',label:'PinkyC0',fw:{side:'right',row:0,col:0}})
+  ];
+  const before=JSON.stringify(p),svg=FW.wiringDiagram(p);
+  const headers=[...svg.matchAll(/<text x="(\d+)" y="(\d+)" fill="#4777a8" font-family="Arial, sans-serif" font-size="13" font-weight="700" text-anchor="middle">C(\d+)<\/text>/g)];
+  const rightY=Math.max(...headers.map(m=>Number(m[2]))),rightHeaders=headers.filter(m=>Number(m[2])===rightY),xByColumn=Object.fromEntries(rightHeaders.map(m=>[Number(m[3]),Number(m[1])]));
+  assert.ok(xByColumn[5]<xByColumn[4]&&xByColumn[4]<xByColumn[3]&&xByColumn[3]<xByColumn[0],'right hand thumb-side columns appear on the left');
+  assert.ok(svg.includes(`<text x="${xByColumn[5]}" y="${rightY+19}" fill="#66717a" font-family="Arial, sans-serif" font-size="11" font-weight="500" text-anchor="middle">GP19</text>`),'C5 remains connected to its configured GPIO');
+  assert.ok(svg.includes('ThumbC5')&&svg.includes('ThumbC3')&&svg.includes('PinkyC0'));
+  assert.ok(svg.includes('R0 / C5')&&svg.includes('R0 / C3')&&svg.includes('R0 / C0'),'printed addresses remain logical');
+  assert.equal(JSON.stringify(p),before,'diagram only changes display coordinates');
+});
 test('legacy single-wire projects preserve exact wiring and export without full-duplex macros',()=>{
   const p=project();assert.deepEqual(FW.sanitizeFirmware(p.firmware),p.firmware);
   assert.equal(FW.serialMode(p.firmware),'half_duplex');assert.ok(!('serialMode' in FW.normalizeProject(p).firmware.split));

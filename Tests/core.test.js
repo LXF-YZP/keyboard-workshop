@@ -381,7 +381,8 @@ test('截图键盘轮廓支持凹多边形、保存为毫米 DXF 并检查开孔
 test('截图键盘轮廓拒绝自交点列并允许旧工程缺省字段',()=>{
   assert.throws(()=>KB.outlinePoints([{x:0,y:0},{x:2,y:2},{x:0,y:2},{x:2,y:0}]),/面积|相交/);
   const legacy=KB.plate([KB.key()],{outline:'capture',outlinePoints:[]});
-  assert.ok(legacy.errors.some(s=>s.includes('闭合')));
+  assert.equal(legacy.errors.length,1);assert.ok(legacy.errors[0].includes('至少需要 3 个点'));
+  assert.ok(!legacy.errors.some(s=>s.includes('超出定位板外框')),'missing outline must not cascade into per-key overhang errors');
 });
 
 const area=points=>Math.abs(points.reduce((s,p,i)=>{const q=points[(i+1)%points.length];return s+p.x*q.y-q.x*p.y;},0))/2;
@@ -437,6 +438,30 @@ test('板框圆角：矩形外框四角倒圆，凹形截图轮廓的内凹角�
   near(pathArea(path),area(outline.map(p=>({x:p.x*19.05,y:p.y*19.05})))-4*(1-Math.PI/4)*r*r,1e-6);
   const dxfBulges=[...KB.dxf(concave).matchAll(/\r\n42\r\n(-?[\d.]+)/g)].map(m=>Math.sign(Number(m[1])));
   assert.deepEqual(dxfBulges.slice(0,6),signs.map(s=>-s));
+});
+
+test('沿键位外形生成凹口板框：2.9 mm 外扩、圆角与 DXF/SVG 一致',()=>{
+  const keys=[KB.key({x:0,y:0}),KB.key({x:1,y:0}),KB.key({x:0,y:1})];
+  const p=KB.plate(keys,{outline:'contour',margin:2.9,outlineRadius:2});
+  assert.deepEqual(p.errors,[]);assert.equal(p.outlines.length,1);
+  near(p.bounds.x,-9.525-2.9);near(p.bounds.y,-9.525-2.9);
+  near(p.bounds.x+p.bounds.w,1.5*19.05+2.9);near(p.bounds.y+p.bounds.h,1.5*19.05+2.9);
+  const outline=p.toolpaths.outlines[0];assert.ok(outline.filter(v=>v.bulge).length>=5);
+  assert.ok(outline.some(v=>v.bulge<0),'re-entrant step gets a tangent radius');
+  for(const hole of p.polygons)assert.ok(hole.points.every(v=>KB.inside(v,p.outlines[0])));
+  const dxf=KB.dxf(p,['plate']),svg=KB.svg(p,['plate']);
+  assert.match(dxf,/\r\n2\r\nOUTLINE\r\n/);assert.ok((dxf.match(/\r\n42\r\n/g)||[]).length>=5);
+  assert.match(svg,/<g id="OUTLINE">[\s\S]*<path d="[^"]* A/);
+});
+
+test('沿键位外形保留轮廓内部空区的独立切割线',()=>{
+  const keys=[];for(let y=0;y<3;y++)for(let x=0;x<3;x++)if(x!==1||y!==1)keys.push(KB.key({x,y}));
+  const p=KB.plate(keys,{outline:'contour',margin:2.9});
+  assert.deepEqual(p.errors,[]);assert.equal(p.outlines.length,1);
+  assert.equal(p.parts[0].holes.filter(h=>h.layer==='OUTLINE').length,1);
+  assert.ok(p.toolpaths.polygons.some(h=>h.layer==='OUTLINE'));
+  const sandwich=KB.plate(keys,{outline:'contour',margin:2.9,caseType:'sandwich'});
+  assert.ok(sandwich.errors.some(e=>e.includes('不能自动生成三明治中框')));
 });
 
 test('板框圆角超过可用边长时自动减小并提示，不产生零长度边',()=>{

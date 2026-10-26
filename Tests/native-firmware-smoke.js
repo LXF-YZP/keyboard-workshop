@@ -127,7 +127,13 @@ try{
   hideBusy();undo();eq(fwData(),beforeRecognition,'recognize undo restores firmware');redo();assert(state.keys.length===43&&state.keys[42].fw.row===null,'recognize redo');
 }finally{Object.assign(Recognition,recognitionMethods);imageElement=oldImageElement;hideBusy();}
 // 恢复可导出工程，再验证预览、两个目标的原生导出消息。
-Workshop.loadText(JSON.stringify(saved));setView('firmware');base();click('previewFirmware');
+Workshop.loadText(JSON.stringify(saved));setView('firmware');base();
+assert(getComputedStyle($('previewWiringDiagramQuick')).display!=='none'&&!$('previewWiringDiagramQuick').disabled,'quick wiring preview visible in firmware toolbar');click('previewWiringDiagramQuick');
+assert($('wiringDiagramDialog').open&&$('wiringDiagramImage').src.startsWith('blob:'),'SVG wiring preview opens');
+await new Promise((resolve,reject)=>{const image=$('wiringDiagramImage');if(image.complete&&image.naturalWidth){resolve();return;}image.onload=resolve;image.onerror=()=>reject(Error('SVG preview failed to render'));});
+assert($('wiringDiagramImage').naturalWidth>0&&$('wiringDiagramImage').naturalHeight>0,'SVG preview rendered');click('closeWiringDiagram');
+click('exportWiringSVG');click('exportWiringPNG');await new Promise(resolve=>setTimeout(resolve,350));
+click('previewFirmware');
 assert($('firmwarePreviewDialog').open&&$('firmwareFileList').options.length===11,'ZMK file preview');
 $('firmwareFileList').selectedIndex=4;$('firmwareFileList').dispatchEvent(new Event('change'));assert($('firmwarePreview').textContent.length>0,'file selection');click('closeFirmwarePreview');click('exportFirmware');
 set('firmwareTarget','qmk');assert(state.firmware.controller==='promicro_avr','QMK default board');
@@ -179,7 +185,7 @@ sel(leftKey);click('duplicate');const splitCopy=state.keys.find(k=>selected.has(
 const splitSaved=Workshop.getState();Workshop.loadText(JSON.stringify(splitSaved));eq(fwData(),wired,'split save reopen preserves side and all settings');
 await window.nativeEvent({event:'restore',payload:splitSaved});eq(fwData(),wired,'split autosave restore');setView('firmware');
 assert(!FW.validate(state).errors.length,'reference plus sixth column is valid');
-click('previewFirmware');assert($('firmwareFileList').options.length===8,'split QMK includes config and touchpad files');click('closeFirmwarePreview');click('exportFirmware');
+click('previewFirmware');assert($('firmwareFileList').options.length===13,'split QMK includes VIA/Vial and touchpad files');click('closeFirmwarePreview');click('exportFirmware');
 set('firmwareTarget','zmk');assert(state.firmware.controller==='nice_nano_v2','ZMK selects supported controller');
 assert($('serialModeRow').hidden&&$('serialPinRow').hidden&&$('serialRxPinRow').hidden,'wireless hides wired GPIO controls');
 assert(FW.validate(state).errors.some(e=>e.msg.includes('Azoteq')),'unsupported peripheral cannot silently disappear');
@@ -192,4 +198,6 @@ await new Promise(resolve=>setTimeout(resolve,120));
 assert(document.documentElement.scrollWidth<=window.innerWidth,'page no horizontal overflow');
 assert(document.querySelector('.inspector').scrollWidth<=document.querySelector('.inspector').clientWidth,'inspector no horizontal overflow '+JSON.stringify([...document.querySelectorAll('.inspector *')].filter(e=>e.getBoundingClientRect().right>document.querySelector('.inspector').getBoundingClientRect().right).map(e=>({tag:e.tagName,id:e.id,cls:e.className,width:e.getBoundingClientRect().width,scroll:e.scrollWidth}))));
 persistNow();
-return {entities:42,boards:4,usbIdEditingAndValidation:true,usbIdPersistenceAndUndo:true,splitHands:true,splitUndo:true,splitExports:true,fullDuplex:true,dualPinUndoAndPersistence:true,azoteq:true,rp2040Pins:true,legacyPinValues:true,matrixWithoutGuessedWiring:true,persistence:true,undoRedo:true,layerReferences:true,orderedMatrix:true,decal:true,search:true,migration:true,geometryProtected:true,legacyImport:true,filePreview:true};
+click('previewWiringDiagramQuick');
+await new Promise((resolve,reject)=>{const image=$('wiringDiagramImage');if(image.complete&&image.naturalWidth){resolve();return;}image.onload=resolve;image.onerror=()=>reject(Error('split SVG preview failed to render'));});
+return {entities:42,boards:4,usbIdEditingAndValidation:true,usbIdPersistenceAndUndo:true,splitHands:true,splitUndo:true,splitExports:true,fullDuplex:true,dualPinUndoAndPersistence:true,azoteq:true,rp2040Pins:true,legacyPinValues:true,matrixWithoutGuessedWiring:true,wiringPreview:true,wiringSvgExport:true,wiringPngExport:true,persistence:true,undoRedo:true,layerReferences:true,orderedMatrix:true,decal:true,search:true,migration:true,geometryProtected:true,legacyImport:true,filePreview:true};

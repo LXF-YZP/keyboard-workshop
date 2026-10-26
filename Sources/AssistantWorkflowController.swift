@@ -48,16 +48,29 @@ final class AssistantWorkflowController {
                     do { try content.write(to: url, atomically: true, encoding: .utf8); self.finish(id, ["status": "complete", "name": url.lastPathComponent, "message": "已保存：" + url.lastPathComponent]) }
                     catch { self.finish(id, ["error": error.localizedDescription]) }
                 }
-            case "folder":
+            case "saveImage":
+                guard let encoded = body["data"] as? String, encoded.count < 70 * 1024 * 1024,
+                      let image = Data(base64Encoded: encoded), image.count <= 50 * 1024 * 1024,
+                      image.starts(with: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+                      let name = body["name"] as? String else { throw ImageAnalyzer.problem("PNG 图片数据无效或过大。") }
+                let dialog = NSSavePanel(); dialog.nameFieldStringValue = (name as NSString).lastPathComponent; dialog.allowedContentTypes = [.png]; dialog.canCreateDirectories = true; panel = dialog
+                dialog.beginSheetModal(for: window) { response in
+                    guard response == .OK, let url = dialog.url else { self.finish(id, ["status": "cancelled"]); return }
+                    guard self.active == id else { return }
+                    do { try image.write(to: url, options: .atomic); self.finish(id, ["status": "complete", "name": url.lastPathComponent, "message": "已保存：" + url.lastPathComponent]) }
+                    catch { self.finish(id, ["error": error.localizedDescription]) }
+                }
+            case "folder", "kicad":
+                let isKiCad = body["kind"] as? String == "kicad"
                 guard let name = body["name"] as? String, let entries = body["files"] as? [[String: String]] else { throw ImageAnalyzer.problem("导出内容无效。") }
                 let files = entries.compactMap { entry -> FirmwareExport.File? in guard let path = entry["path"], let content = entry["content"] else { return nil }; return .init(path: path, content: content) }
                 guard files.count == entries.count else { throw ImageAnalyzer.problem("导出文件无效。") }
                 try FirmwareExport.validate(name: name, files: files)
-                let dialog = NSOpenPanel(); dialog.canChooseDirectories = true; dialog.canChooseFiles = false; dialog.canCreateDirectories = true; dialog.allowsMultipleSelection = false; dialog.message = "创建固件目录“\(name)”，不覆盖已有目录。"; panel = dialog
+                let dialog = NSOpenPanel(); dialog.canChooseDirectories = true; dialog.canChooseFiles = false; dialog.canCreateDirectories = true; dialog.allowsMultipleSelection = false; dialog.message = "创建\(isKiCad ? "KiCad 工程" : "固件")目录“\(name)”，已有目录会自动加序号保留。"; dialog.prompt = isKiCad ? "导出 KiCad 工程" : "导出固件"; panel = dialog
                 dialog.beginSheetModal(for: window) { response in
                     guard response == .OK, let url = dialog.url else { self.finish(id, ["status": "cancelled"]); return }
                     guard self.active == id else { return }
-                    do { let root = try FirmwareExport.write(parent: url, name: name, files: files); self.finish(id, ["status": "complete", "name": root.lastPathComponent, "message": "已导出固件：" + root.path]) }
+                    do { let root = try FirmwareExport.write(parent: url, name: name, files: files); self.finish(id, ["status": "complete", "name": root.lastPathComponent, "message": (isKiCad ? "已导出 KiCad 工程：" : "已导出固件：") + root.path]) }
                     catch { self.finish(id, ["error": error.localizedDescription]) }
                 }
             case "image":

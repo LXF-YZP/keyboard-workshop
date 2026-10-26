@@ -69,7 +69,7 @@
     object(input,['parameters','add_features','update_features','delete_features']);const next=clone(p),notes=[];
     const parameters=input.parameters||{};object(parameters,plateFields);
     for(const [key,value] of Object.entries(parameters)){
-      if(key==='outline')choice(value,['hull','rectangle','split','capture']);
+      if(key==='outline')choice(value,['hull','contour','rectangle','split','capture']);
       if(key==='cutout')choice(value,['square','mx-openable','alps','mx-alps']);
       if(key==='stabilizers')choice(value,['none','pcb','mx-basic','mx-tight','costar','cherry-spec']);
       if(key==='caseType')choice(value,['none','sandwich']);

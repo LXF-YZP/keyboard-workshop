@@ -26,6 +26,15 @@ class Smoke: NSObject, NSApplicationDelegate, WKNavigationDelegate, WKScriptMess
    if(Workshop.getPlate().errors.length)throw Error('plate errors');
    const dxf=KB.dxf(Workshop.getPlate());
    if(!dxf.includes('LWPOLYLINE'))throw Error('DXF');
+   const outlineSelect=document.getElementById('outline');
+   if(![...outlineSelect.options].some(o=>o.value==='contour'))throw Error('key-following outline option missing');
+   outlineSelect.value='contour';outlineSelect.dispatchEvent(new Event('change'));
+   const setPlateField=(id,value)=>{const field=document.getElementById(id);field.value=String(value);field.dispatchEvent(new Event('change'));};
+   setPlateField('margin',2.9);setPlateField('outlineRadius',2);
+   const contoured=Workshop.getPlate(),contourDXF=KB.dxf(contoured);
+   if(contoured.errors.length||contoured.options.outline!=='contour'||contoured.options.margin!==2.9||contoured.options.outlineRadius!==2||!contourDXF.includes('LWPOLYLINE')||(contourDXF.match(/\\r\\n42\\r\\n/g)||[]).length<5)throw Error('key-following board preview / rounded DXF');
+   for(let i=0;i<3;i++)document.getElementById('undo').click();
+   if(Workshop.getState().options.outline!=='hull'||Workshop.getState().options.margin!==4||Workshop.getState().options.outlineRadius!==0)throw Error('key-following board undo');
    const cherry=KB.plate([KB.key({w:2})],{stabilizers:'cherry-spec',holeRadius:.4,kerf:.2});
    if(cherry.errors.length||cherry.polygons.length!==1||cherry.polygons[0].layer!=='SWITCH'||cherry.polygons[0].points.length<20||!/\\r\\nSWITCH\\r\\n/.test(KB.dxf(cherry)))throw Error('Cherry Spec');
    document.getElementById('addRectangle').click();

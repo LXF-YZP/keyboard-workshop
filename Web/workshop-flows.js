@@ -11,7 +11,7 @@
   function validateWorkflowArgs(kind,args){
     const definitions={
       project_workflow:[['action','id','name'],['list','compare','duplicate','switch','rename','undo']],
-      file_workflow:[['action','part'],['open','project','kle','dxf','svg','firmware']],
+      file_workflow:[['action','part'],['open','project','kle','dxf','svg','firmware','wiring_preview','wiring_svg','wiring_png','kicad']],
       image_workflow:[['action','symmetric'],['open','paste','recognize','labels','roi','calibrate']],
       github_workflow:[['action','repo','create','private'],['status','refresh','logs','publish','download']]
     };

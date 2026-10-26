@@ -7,6 +7,7 @@ final class FirmwareSmoke: NSObject, NSApplicationDelegate, WKNavigationDelegate
     var window: NSWindow!
     var exports = [[String: Any]]()
     var saves = [[String: Any]]()
+    var images = [[String: Any]]()
     var autosaves = 0
     func applicationDidFinishLaunching(_ note: Notification) {
         let config = WKWebViewConfiguration()
@@ -26,6 +27,7 @@ final class FirmwareSmoke: NSObject, NSApplicationDelegate, WKNavigationDelegate
         guard let body = message.body as? [String: Any] else { return }
         if body["action"] as? String == "saveFolder" { exports.append(body) }
         if body["action"] as? String == "save" { saves.append(body) }
+        if body["action"] as? String == "saveImage" { images.append(body) }
         if body["action"] as? String == "autosave" { autosaves += 1 }
     }
     func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
@@ -37,7 +39,9 @@ final class FirmwareSmoke: NSObject, NSApplicationDelegate, WKNavigationDelegate
                 switch result {
                 case .success(let data):
                     do {
-                        guard self.exports.count == 4, self.saves.count == 1, self.autosaves > 0 else { throw FirmwareExport.problem("missing intercepted messages") }
+                        guard self.exports.count == 4, self.saves.count == 2, self.images.count == 1, self.autosaves > 0 else { throw FirmwareExport.problem("missing intercepted messages") }
+                        guard let encoded = self.images.first?["data"] as? String, let png = Data(base64Encoded: encoded), png.starts(with: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else { throw FirmwareExport.problem("PNG export was not a valid PNG") }
+                        guard (self.saves.first?["content"] as? String)?.contains("<svg xmlns=\"http://www.w3.org/2000/svg\"") == true || (self.saves.last?["content"] as? String)?.contains("<svg xmlns=\"http://www.w3.org/2000/svg\"") == true else { throw FirmwareExport.problem("SVG export missing") }
                         let parent = FileManager.default.temporaryDirectory.appendingPathComponent("workshop-native-firmware-" + UUID().uuidString)
                         try FileManager.default.createDirectory(at: parent, withIntermediateDirectories: true)
                         defer { try? FileManager.default.removeItem(at: parent) }
@@ -65,7 +69,7 @@ final class FirmwareSmoke: NSObject, NSApplicationDelegate, WKNavigationDelegate
                         guard CommandLine.arguments.count > 2 else { exit(0) }
                         let path = URL(fileURLWithPath: CommandLine.arguments[2]).deletingPathExtension().path
                         self.snapshot(path + ".png") {
-                            self.web.evaluateJavaScript("document.querySelector('.firmware-pins').open=false;selected=new Set([state.keys.find(k=>!k.decal).id]);inspector();document.querySelector('.inspector').scrollTop=0") { _, _ in
+                            self.web.evaluateJavaScript("document.getElementById('closeWiringDiagram').click();document.querySelector('.firmware-pins').open=false;selected=new Set([state.keys.find(k=>!k.decal).id]);inspector();document.querySelector('.inspector').scrollTop=0") { _, _ in
                                 self.snapshot(path + "-bindings.png") {
                                     self.web.evaluateJavaScript("document.getElementById('previewFirmware').click()") { _, _ in
                                         self.snapshot(path + "-preview.png") {

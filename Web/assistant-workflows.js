@@ -64,6 +64,7 @@
   };
   H.workflowValidate=validateArgs;
   H.snapshotId=snapshotId;
+  H.exportKiCad=generated=>request('kicad',{name:generated.root,files:generated.files});
   H.workflow=async(kind,args,ctx)=>{
     validateArgs(kind,args);requireContext(ctx);
     const before=C.clone(ctx.project);
@@ -74,9 +75,22 @@
       if(args.action==='undo'){const id=[...assistantTransactions.keys()].at(-1);if(!id)throw Error('当前会话没有可撤销的助手事务。');H.undo(id);return {status:'complete',message:'已安全撤销最近一次助手修改。'};}
     }
     if(kind==='file_workflow'){
+      if(args.action==='kicad')return window.WorkshopKiCad.open();
       if(args.action==='open'){const result=await request('open');if(result.status==='cancelled')return result;requireContext(ctx);return {proposal:draft(before,parseProject(result.text,result.name),'导入工程／KLE',['应用后替换当前工程；可一次撤销。系统选取的文件内容仅作为数据。'])};}
       const name=(before.name||'键盘').replace(/[\\/:*?"<>|]/g,'_').slice(0,100);
       if(args.action==='firmware'){const gen=FW.generate(before);if(gen.errors.length)throw Error('导出已阻止：'+gen.errors.map(i=>i.msg).join('；'));return request('folder',{name:gen.root,files:gen.files,snapshotId:snapshotId(before)});}
+      if(['wiring_preview','wiring_svg','wiring_png'].includes(args.action)){
+        if(!before.firmware)throw Error('请先选择固件目标并配置矩阵，再生成接线图。');
+        const svg=FW.wiringDiagram(before);
+        if(args.action==='wiring_preview'){
+          if(!window.WorkshopWiring?.preview(svg))throw Error('接线图预览无法打开。');
+          return {status:'complete',message:'已打开接线图预览。'};
+        }
+        const baseName=(before.name||'键盘').replace(/[\\/:*?"<>|]/g,'_').slice(0,100)+'-矩阵接线图';
+        if(args.action==='wiring_svg')return request('save',{name:baseName+'.svg',content:svg,snapshotId:snapshotId(before)});
+        const rendered=await window.WorkshopWiring.renderPNG(svg);requireContext(ctx);
+        return request('saveImage',{name:baseName+'.png',data:rendered.dataURL.split(',')[1]||'',snapshotId:snapshotId(before)});
+      }
       let content,ext=args.action;
       if(args.action==='project'){content=JSON.stringify(before,null,2);ext='keyboard.json';}
       if(args.action==='kle'){content=KB.exportKLE(before.keys,before.name);ext='kle.json';}

@@ -12,7 +12,7 @@
     if(rp2040)pins.sort((a,b)=>RP2040[a]-RP2040[b]);
     return pins.map(value=>{const connector=PRO_MICRO_LABELS[value]||String(value),label=rp2040?'GP'+RP2040[value]:connector;return {value,label,title:rp2040?`${label}（兼容 Pro Micro ${connector}）`:`Pro Micro 接口 ${connector}`};});
   }
-  const QMK_VERSION='0.34.7', ZMK_VERSION='v0.3';
+  const QMK_VERSION='0.34.7', VIAL_QMK_VERSION='dd43959ae5c08d8a28d38a1acf7b04e86b14a344', ZMK_VERSION='v0.3';
   function normalizeUsbId(value){
     const match=typeof value==='string'&&/^(?:0x)?([0-9a-f]{1,4})$/i.exec(value.trim());
     return match?'0x'+match[1].toUpperCase().padStart(4,'0'):null;
@@ -176,6 +176,7 @@
     result.addedLayers=f.layers.length-before;return result;
   }
   const qmkAction=a=>{if(a.t==='trans')return 'KC_TRNS';if(a.t==='none')return 'KC_NO';if(a.t==='mo')return `MO(${a.l})`;if(a.t==='tg')return `TG(${a.l})`;if(a.t==='to')return `TO(${a.l})`;let code=codeMap.get(a.k)?.qmk||'KC_NO';for(const m of (a.m||[]).slice().reverse())code=`${m}(${code})`;return code;};
+  function qmkCKeymap(layers,keys){return `#include QMK_KEYBOARD_H\n\nconst uint16_t PROGMEM keymaps[][MATRIX_ROWS][MATRIX_COLS] = {\n${layers.map((_,i)=>`    [${i}] = LAYOUT(\n        ${keys.map(k=>qmkAction(k.fw.bindings[i])).join(', ')}\n    )${i<layers.length-1?',':''}`).join('\n\n')}\n};\n`;}
   const zmkAction=a=>{if(a.t==='trans')return '&trans';if(a.t==='none')return '&none';if(a.t==='mo')return `&mo ${a.l}`;if(a.t==='tg')return `&tog ${a.l}`;if(a.t==='to')return `&to ${a.l}`;const code=codeMap.get(a.k)?.zmk||a.k||'&none';return `&kp ${(a.m||[]).slice().reverse().reduce((s,m)=>({LCTL:`LC(${s})`,RCTL:`RC(${s})`,LSFT:`LS(${s})`,RSFT:`RS(${s})`,LALT:`LA(${s})`,RALT:`RA(${s})`,LGUI:`LG(${s})`,RGUI:`RG(${s})`}[m]||s),code)}`;};
   function ordered(project){return (project.keys||[]).filter(k=>!k.decal).slice().sort((a,b)=>(isSplit(project.firmware)?(a.fw?.side==='right'?1:0)-(b.fw?.side==='right'?1:0):0)||(a.fw?.row??999)-(b.fw?.row??999)||(a.fw?.col??999)-(b.fw?.col??999)||String(a.id).localeCompare(String(b.id)));}
   function physical(keys){
@@ -183,6 +184,34 @@
     // 包含未旋转的原点，保证长键大角度旋转时 KLE 原点也不为负。
     const minX=Math.min(...corners.map(p=>p.x),...keys.map(k=>k.x-k.w/2)),minY=Math.min(...corners.map(p=>p.y),...keys.map(k=>k.y-k.h/2)),round=n=>Number(n.toFixed(3));
     return keys.map(k=>{const a={matrix:[k.fw.row,k.fw.col],x:round(k.x-k.w/2-minX),y:round(k.y-k.h/2-minY),w:round(k.w),h:round(k.h)};if(k.angle)Object.assign(a,{r:round(k.angle),rx:round(k.x-minX),ry:round(k.y-minY)});return a;});
+  }
+  function compatibilityLayout(attrs){
+    // VIA / Vial use KLE-style rows. Put each key in its own row with an
+    // explicit pivot so stagger, rotation, spacing and split coordinates stay exact.
+    const round=n=>Number(n.toFixed(3));
+    return attrs.map(a=>{
+      const rx=round(a.rx??0),ry=round(a.ry??0),r=round(a.r??0),layout={r,rx,ry,x:round(a.x-rx),y:round(a.y-ry)};
+      if(a.w!==1)layout.w=a.w;if(a.h!==1)layout.h=a.h;
+      return [layout,`${a.matrix[0]},${a.matrix[1]}`];
+    });
+  }
+  function vialUnlockKeys(keys,f){
+    const split=isSplit(f);
+    const candidates=[];
+    for(let i=0;i<keys.length;i++)for(let j=i+1;j<keys.length;j++){
+      candidates.push({a:keys[i],b:keys[j],sameSide:!split||keys[i].fw.side===keys[j].fw.side,distance:Math.hypot(keys[i].x-keys[j].x,keys[i].y-keys[j].y)});
+    }
+    candidates.sort((a,b)=>Number(b.sameSide)-Number(a.sameSide)||a.distance-b.distance||String(a.a.id).localeCompare(String(b.a.id))||String(a.b.id).localeCompare(String(b.b.id)));
+    const pair=candidates[0],selected=pair?[pair.a,pair.b]:keys.slice(0,1);
+    return selected.map(k=>[k.fw.row+(split&&k.fw.side==='right'?f.rows:0),k.fw.col]);
+  }
+  function vialUid(f){
+    // Stable, project-specific UID. The unlock chord remains the physical gate;
+    // this identifier is only used by Vial to recognize the keyboard model.
+    const source=`keyboard-workshop:${f.id}:${normalizeUsbId(usbIds(f).vid)}:${normalizeUsbId(usbIds(f).pid)}`;
+    let a=0x811c9dc5,b=0x9e3779b9;
+    for(let i=0;i<source.length;i++){const c=source.charCodeAt(i);a=Math.imul(a^c,0x01000193)>>>0;b=Math.imul(b^c,0x85ebca6b)>>>0;}
+    return [a>>>24,(a>>>16)&255,(a>>>8)&255,a&255,b>>>24,(b>>>16)&255,(b>>>8)&255,b&255].map(n=>'0x'+n.toString(16).padStart(2,'0').toUpperCase());
   }
   function validate(project){
     const f=project?.firmware,errors=[],warnings=[],keys=(project?.keys||[]).filter(k=>!k.decal);
@@ -247,12 +276,92 @@
     if(f.target==='zmk'&&String(f.displayName||'').length>16)warnings.push({msg:'ZMK 键盘名称将截断为 16 个字符。'});
     return {errors,warnings};
   }
+  const xml=value=>String(value??'').replace(/[&<>"']/g,ch=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&apos;'}[ch]));
+  const boardNames={promicro_avr:'Pro Micro · ATmega32U4',promicro_rp2040:'SparkFun Pro Micro · RP2040',nice_nano_v2:'nice!nano v2',rp2040:'通用 RP2040'};
+  function wiringDiagram(project){
+    const f=project?.firmware,keys=(project?.keys||[]).filter(k=>!k.decal),split=isSplit(f),rows=Number.isInteger(f?.rows)&&f.rows>0?Math.min(f.rows,32):1,cols=Number.isInteger(f?.cols)&&f.cols>0?Math.min(f.cols,32):1,sides=split?['left','right']:['left'];
+    const pad=32,labelW=168,cellW=150,rowStep=112,gridX=pad+labelW+62,colAt=c=>gridX+42+c*cellW,rowAt=(top,r)=>top+r*rowStep,xmlText=value=>xml(value),pinText=value=>value==null?'未分配':(pinOptions(f?.controller).find(p=>p.value===value)?.label||`未知 GPIO ${value}`),out=[];
+    const line=(x1,y1,x2,y2,color,width=2,extra='')=>`<path d="M${x1} ${y1}L${x2} ${y2}" fill="none" stroke="${color}" stroke-width="${width}" ${extra}/>`;
+    const text=(x,y,value,size=14,color='#29333a',weight=400,anchor='start')=>`<text x="${x}" y="${y}" fill="${color}" font-family="Arial, sans-serif" font-size="${size}" font-weight="${weight}" text-anchor="${anchor}">${xmlText(value)}</text>`;
+    const rowColor='#b34b42',colColor='#4777a8',ink='#29333a',muted='#66717a',warn='#a54031',good='#2f755b';
+    const width=Math.max(900,gridX+42+cols*cellW+pad),heightBase=190+((rows-1)*rowStep)+106,unplaced=[];let cursor=150,placed=0,duplicates=0,missingGPIO=0;
+    out.push(`<rect x="0" y="0" width="${width}" height="${heightBase}" fill="#ffffff"/>`);
+    out.push(text(pad,42,`${project?.name||f?.displayName||'键盘'} · 矩阵接线图`,24,ink,700));
+    out.push(text(pad,70,`${f?.target?.toUpperCase()||'固件未选择'}  ·  ${boardNames[f?.controller]||'主控未选择'}  ·  ${split?'左右分体':'单体'}  ·  ${f?.diode==='row2col'?'ROW2COL':'COL2ROW'}`,14,muted,500));
+    const located=keys.filter(k=>Number.isInteger(k.fw?.row)&&Number.isInteger(k.fw?.col)&&k.fw.row>=0&&k.fw.row<rows&&k.fw.col>=0&&k.fw.col<cols&&(!split||['left','right'].includes(k.fw?.side))).length;
+    const gpioLists=sides.map(side=>{const cfg=sideConfig(f||{},side)||{};return {side,row:Array.isArray(cfg.rowPins)?cfg.rowPins:[],col:Array.isArray(cfg.colPins)?cfg.colPins:[]};});
+    for(const cfg of gpioLists)missingGPIO+=rows-Array.from({length:rows},(_,i)=>cfg.row[i]).filter(v=>v!=null).length+cols-Array.from({length:cols},(_,i)=>cfg.col[i]).filter(v=>v!=null).length;
+    const unassigned=keys.filter(k=>!Number.isInteger(k.fw?.row)||!Number.isInteger(k.fw?.col)||k.fw.row<0||k.fw.row>=rows||k.fw.col<0||k.fw.col>=cols||(split&&!['left','right'].includes(k.fw?.side)));
+    const status=missingGPIO||unassigned.length?`草稿图 · ${missingGPIO} 个 GPIO 未分配 · ${unassigned.length} 个按键未定位；请按实际 PCB 接线补齐`:`${located} / ${keys.length} 个实体按键已定位 · 引脚均已填写`;
+    out.push(`<rect x="${pad}" y="88" width="${width-pad*2}" height="34" rx="6" fill="${missingGPIO||unassigned.length?'#fff1e8':'#e9f4ed'}"/>`);
+    out.push(text(pad+12,111,status,13,missingGPIO||unassigned.length?warn:good,600));
+    for(const side of sides){
+      const rawConfig=sideConfig(f||{},side)||{},cfg={row:Array.isArray(rawConfig.rowPins)?rawConfig.rowPins:[],col:Array.isArray(rawConfig.colPins)?rawConfig.colPins:[]},sideKeys=keys.filter(k=>!split||k.fw?.side===side),matrix=new Map();
+      for(const k of sideKeys){const r=k.fw?.row,c=k.fw?.col;if(!Number.isInteger(r)||!Number.isInteger(c)||r<0||r>=rows||c<0||c>=cols)continue;const slot=`${r},${c}`;if(!matrix.has(slot))matrix.set(slot,[]);matrix.get(slot).push(k);if(matrix.get(slot).length===2)duplicates++;}
+      const top=cursor,firstRow=top+92,lastRow=rowAt(firstRow,rows-1),bottom=lastRow+82;
+      if(split)out.push(text(pad,top+21,`${side==='left'?'左手':'右手'}  ·  ${sideKeys.length} 键${f?.split?.master===side?'  ·  主手':''}`,17,ink,700));
+      else out.push(text(pad,top+21,`矩阵  ·  ${sideKeys.length} 键`,17,ink,700));
+      out.push(text(pad,top+45,'R 红线 · 行总线',12,rowColor,600));out.push(text(pad+112,top+45,'C 蓝线 · 列总线',12,colColor,600));
+      const rowYs=Array.from({length:rows},(_,r)=>rowAt(firstRow,r));
+      for(let displayCol=0;displayCol<cols;displayCol++){
+        // The right half is viewed from the user's side, so its thumb-side
+        // columns belong on the left. Keep matrix addresses and GPIO indices
+        // logical; only map them to mirrored drawing coordinates.
+        const c=split&&side==='right'?cols-1-displayCol:displayCol,x=colAt(displayCol),pin=cfg.col?.[c];
+        out.push(text(x,top+49,`C${c}`,13,colColor,700,'middle'));
+        out.push(text(x,top+68,pinText(pin),11,pin==null?warn:muted,500,'middle'));
+        let from=firstRow-13;
+        for(const y of rowYs){out.push(line(x,from,x,y-7,colColor,2));out.push(`<path d="M${x} ${y-7} C${x+9} ${y-5} ${x+9} ${y+5} ${x} ${y+7}" fill="none" stroke="${colColor}" stroke-width="2"/>`);from=y+7;}
+        out.push(line(x,from,x,bottom-12,colColor,2));
+      }
+      for(let r=0;r<rows;r++){
+        const y=rowYs[r],rowPin=cfg.row?.[r];
+        out.push(`<path d="M${gridX-24} ${y}H${colAt(cols-1)+24}" fill="none" stroke="${rowColor}" stroke-width="2.5"/>`);
+        out.push(text(pad,y-4,`R${r}`,13,rowColor,700));out.push(text(pad,y+14,pinText(rowPin),11,rowPin==null?warn:muted,500));
+        for(let displayCol=0;displayCol<cols;displayCol++){
+          const c=split&&side==='right'?cols-1-displayCol:displayCol,x=colAt(displayCol),tap=x-82,list=matrix.get(`${r},${c}`)||[];
+          if(!list.length){out.push(`<circle cx="${x}" cy="${y}" r="3.5" fill="#fff" stroke="#98a1a8" stroke-width="1.5"/>`);continue;}
+          placed+=list.length;
+          out.push(`<circle cx="${tap}" cy="${y}" r="3.5" fill="${rowColor}"/>`);
+          out.push(line(tap,y+3,tap,y+14,ink,1.7));
+          out.push(`<circle cx="${tap}" cy="${y+15}" r="2.8" fill="#fff" stroke="${ink}" stroke-width="1.4"/><circle cx="${tap}" cy="${y+30}" r="2.8" fill="#fff" stroke="${ink}" stroke-width="1.4"/>`);
+          out.push(line(tap,y+15,tap+8,y+26,ink,1.7));out.push(line(tap,y+33,tap+13,y+33,ink,1.7));
+          const diodeX=tap+30,diodeY=y+33,diodeRight=f?.diode==='row2col';
+          out.push(line(tap+13,diodeY,diodeX,diodeY,ink,1.6));
+          if(diodeRight){out.push(`<path d="M${diodeX} ${diodeY-6}L${diodeX} ${diodeY+6}L${diodeX+10} ${diodeY}Z" fill="#fff" stroke="${ink}" stroke-width="1.5"/><path d="M${diodeX+12} ${diodeY-8}V${diodeY+8}" fill="none" stroke="${ink}" stroke-width="2"/>`);out.push(line(diodeX+12,diodeY,x-2,diodeY,ink,1.6));}
+          else{out.push(`<path d="M${diodeX+12} ${diodeY-6}L${diodeX+12} ${diodeY+6}L${diodeX+2} ${diodeY}Z" fill="#fff" stroke="${ink}" stroke-width="1.5"/><path d="M${diodeX} ${diodeY-8}V${diodeY+8}" fill="none" stroke="${ink}" stroke-width="2"/>`);out.push(line(diodeX+14,diodeY,x-2,diodeY,ink,1.6));}
+          out.push(`<circle cx="${x}" cy="${diodeY}" r="3.5" fill="${colColor}"/>`);
+          const label=list.map(k=>legendText(k)||k.id||'按键').join(' / ').slice(0,20),duplicate=list.length>1;
+          out.push(`<rect x="${x+8}" y="${y+48}" width="124" height="25" rx="5" fill="${duplicate?'#fff1e8':'#f4f6f7'}" stroke="${duplicate?warn:'#bfc7cc'}"/>`);
+          out.push(text(x+70,y+65,label,12,duplicate?warn:ink,600,'middle'));
+          out.push(text(x+70,y+87,`R${r} / C${c}`,10,muted,500,'middle'));
+        }
+      }
+      cursor=bottom+24;
+    }
+    if(unassigned.length){const shown=unassigned.slice(0,18),labels=shown.map(k=>`${split?(k.fw?.side==='left'?'左':k.fw?.side==='right'?'右':'未分侧')+' · ':''}${legendText(k)||k.id||'按键'}`).join('、'),preview=labels.length>130?labels.slice(0,127)+'…':labels;out.push(`<rect x="${pad}" y="${cursor}" width="${width-pad*2}" height="42" rx="6" fill="#fff1e8"/>`);out.push(text(pad+12,cursor+25,`未定位 / 超出矩阵的按键（${unassigned.length}）：${preview}${unassigned.length>shown.length?' …':''}`,12,warn,600));cursor+=54;}
+    const diodeText=f?.diode==='row2col'?'ROW2COL：二极管阴极标记朝 C（电流由行到列）':'COL2ROW：二极管阴极标记朝 R（电流由列到行）';
+    out.push(text(pad,cursor+14,`每个有效交点：行 → 按键开关 → 二极管 → 列。${diodeText}`,12,ink,600));
+    cursor+=42;
+    if(split){
+      const sp=f?.split||{};let link='';
+      if(f?.target==='zmk')link=`左右手通过蓝牙通信；${sideName(sp.master)}为 central（连接电脑），另一手为 peripheral。`;
+      else if(serialMode(f)==='full_duplex')link=`分体通信：左 TX（${pinText(sp.serialPin)}）→ 右 RX（${pinText(sp.serialRxPin)}）；左 RX（${pinText(sp.serialRxPin)}）← 右 TX（${pinText(sp.serialPin)}）；GND 共地。`;
+      else link=`分体通信单线半双工：两侧 DATA（${pinText(sp.serialPin)}）互连，GND 共地；${sideName(sp.master)}连接 USB。`;
+      out.push(text(pad,cursor,link,12,ink,500));cursor+=24;
+      if(sp.pointing?.enabled)out.push(text(pad,cursor,`${sideName(sp.pointing.side)}触控板 ${sp.pointing.model}：SDA ${pinText(sp.pointing.sda)} · SCL ${pinText(sp.pointing.scl)} · 旋转 ${sp.pointing.rotation}°`,12,ink,500));
+    }
+    cursor+=42;out.push(text(pad,cursor,'接线参考图，不是可直接导入的 EDA 原理图；GPIO 丝印、供电与 PCB 实际布线请按硬件资料核对。',11,muted,400));
+    const height=Math.max(heightBase,cursor+28);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}" role="img" aria-label="键盘矩阵接线参考图"><title>${xmlText(project?.name||f?.displayName||'键盘')} 矩阵接线图</title><desc>${xmlText(`${status}；${diodeText}；${duplicates} 个重复矩阵地址`)}</desc>${out.join('')}</svg>`;
+  }
   const json=value=>JSON.stringify(value,null,2)+'\n';
   const ascii=value=>String(value||'').replace(/[^\x20-\x7e]/g,' ').trim();
   const dts=value=>JSON.stringify(ascii(value));
   const cell=value=>value<0?`(${value})`:String(value);
   function readme(f,display,root){
-    return `# ${display}\n\n键盘工坊生成的 ${f.target.toUpperCase()} 固件仓库。锁定版本：${f.target==='qmk'?'QMK '+QMK_VERSION:'ZMK '+ZMK_VERSION}。${isSplit(f)?'左右分体矩阵，按键保存每侧局部行列；右手导出行号偏移 '+f.rows+'。':'独立矩阵键盘。'}示意标记已排除；编码器、屏幕与灯效未启用。${isSplit(f)&&f.split.pointing?.enabled?'已启用 Azoteq '+f.split.pointing.model+'，位于'+sideName(f.split.pointing.side)+'。':'触控板未启用。'}\n\n## 上传与编译\n\n推荐用 GitHub Desktop：File → Add Local Repository，选择此目录；尚未初始化时点击 Create a Repository（在此目录初始化），提交全部文件后 Publish Repository。可选择公开或私有。\n\n也可以在此目录运行以下命令，先在 GitHub 创建一个空仓库，再把 YOUR_NAME / YOUR_REPO 替换为实际地址：\n\n\`\`\`sh\ngit init\ngit add .\ngit commit -m "Initial keyboard firmware"\ngit branch -M main\ngit remote add origin https://github.com/YOUR_NAME/YOUR_REPO.git\ngit push -u origin main\n\`\`\`\n\n**.github 是隐藏文件夹，包含编译流程，必须一并提交。网页上传容易漏掉，建议使用 GitHub Desktop 或 git。**\n\n推送后打开仓库 Actions，等待编译完成；也可在对应流程选择 Run workflow。打开成功的运行，在 Artifacts 下载 firmware（firmware.zip），解压得到 ${f.controller==='promicro_avr'?'.hex':'.uf2'}。下载产物需要登录 GitHub。公开仓库使用标准托管 runner 通常免费；私有仓库消耗账号套餐的 Actions 分钟与存储额度，超出部分按 GitHub 当前价格计费。\n\n## 刷写\n\n${f.controller==='promicro_avr'?'Pro Micro ATmega32U4：用 QMK Toolbox 打开 .hex，选择 ATmega32U4；短接 RST 与 GND 进入 Caterina 引导后 Flash。':'nice!nano / RP2040：按主控说明双击复位（部分 RP2040 需按住 BOOT 再连接 USB）进入 UF2 磁盘，把 .uf2 拖入。'}\n\n${isSplit(f)?f.target==='qmk'?'两侧刷入同一个固件；USB 固定连接'+sideName(f.split.master)+'，通过 MASTER_'+f.split.master.toUpperCase()+' 区分左右手。' + (serialMode(f)==='full_duplex'?'双线全双工：两侧均配置 TX '+pinLabel(f,f.split.serialPin)+'、RX '+pinLabel(f,f.split.serialRxPin)+'；左 TX → 右 RX，左 RX ← 右 TX，GND → GND（共地）。每侧 TX / RX 不可为同一 GPIO；电源按硬件设计连接。':'单线半双工：两侧数据 GPIO 均为 '+pinLabel(f,f.split.serialPin)+'，同名 GPIO 相连，GND → GND（共地）。电源按硬件设计连接。') + '各侧矩阵接线可不同。':'分别把 '+f.id+'_left 和 '+f.id+'_right 的 UF2 刷入对应半边，'+sideName(f.split.master)+'是 central（连接电脑），另一侧是 peripheral；左右之间使用蓝牙。':''}\n\n先核对主控型号、引脚接线和二极管方向。通用 RP2040 使用原生 GP0–GP29，请核对 PCB 实际引出和占用情况；SparkFun Pro Micro RP2040 使用兼容接口映射。名称中的非 ASCII 字符会替换；ZMK 名称限制为 16 字符。USB VID：${normalizeUsbId(usbIds(f).vid)}，PID：${normalizeUsbId(usbIds(f).pid)}，来自软件“固件目标”中的设置。${f.target==='zmk'?'这两个 ID 用于 USB 连接，蓝牙名称及配对标识单独管理。':''}\n`;
+    const integration=f.target==='qmk'?'已启用 VIA；导出目录包含 `via.json` 和 `keymaps/vial/vial.json`，并同时提供 Vial 的 keymap、解锁组合和编译配置。':'VIA / Vial 仅适用于 QMK。';
+    return `# ${display}\n\n键盘工坊生成的 ${f.target.toUpperCase()} 固件仓库。锁定版本：${f.target==='qmk'?'QMK '+QMK_VERSION:'ZMK '+ZMK_VERSION}。${isSplit(f)?'左右分体矩阵，按键保存每侧局部行列；右手导出行号偏移 '+f.rows+'。':'独立矩阵键盘。'}示意标记已排除；编码器、屏幕与灯效未启用。${integration}${isSplit(f)&&f.split.pointing?.enabled?'已启用 Azoteq '+f.split.pointing.model+'，位于'+sideName(f.split.pointing.side)+'。':'触控板未启用。'}\n\n## 上传与编译\n\n推荐用 GitHub Desktop：File → Add Local Repository，选择此目录；尚未初始化时点击 Create a Repository（在此目录初始化），提交全部文件后 Publish Repository。可选择公开或私有。\n\n也可以在此目录运行以下命令，先在 GitHub 创建一个空仓库，再把 YOUR_NAME / YOUR_REPO 替换为实际地址：\n\n\`\`\`sh\ngit init\ngit add .\ngit commit -m "Initial keyboard firmware"\ngit branch -M main\ngit remote add origin https://github.com/YOUR_NAME/YOUR_REPO.git\ngit push -u origin main\n\`\`\`\n\n**.github 是隐藏文件夹，包含编译流程，必须一并提交。网页上传容易漏掉，建议使用 GitHub Desktop 或 git。**\n\n推送后打开仓库 Actions，等待编译完成；也可在对应流程选择 Run workflow。打开成功的运行，在 Artifacts 下载 firmware（firmware.zip），解压得到 ${f.controller==='promicro_avr'?'.hex':'.uf2'}。QMK、VIA、Vial 的编译输入和元数据均保存在导出目录中。下载产物需要登录 GitHub。公开仓库使用标准托管 runner 通常免费；私有仓库消耗账号套餐的 Actions 分钟与存储额度，超出部分按 GitHub 当前价格计费。\n\n## 刷写\n\n${f.controller==='promicro_avr'?'Pro Micro ATmega32U4：用 QMK Toolbox 打开对应的 VIA 或 Vial .hex，选择 ATmega32U4；短接 RST 与 GND 进入 Caterina 引导后 Flash。':'nice!nano / RP2040：按主控说明双击复位（部分 RP2040 需按住 BOOT 再连接 USB）进入 UF2 磁盘，把选定的 VIA 或 Vial .uf2 拖入。'}\n\n${isSplit(f)?f.target==='qmk'?'两侧刷入同一个固件；USB 固定连接'+sideName(f.split.master)+'，通过 MASTER_'+f.split.master.toUpperCase()+' 区分左右手。' + (serialMode(f)==='full_duplex'?'双线全双工：两侧均配置 TX '+pinLabel(f,f.split.serialPin)+'、RX '+pinLabel(f,f.split.serialRxPin)+'；左 TX → 右 RX，左 RX ← 右 TX，GND → GND（共地）。每侧 TX / RX 不可为同一 GPIO；电源按硬件设计连接。':'单线半双工：两侧数据 GPIO 均为 '+pinLabel(f,f.split.serialPin)+'，同名 GPIO 相连，GND → GND（共地）。电源按硬件设计连接。') + '各侧矩阵接线可不同。':'分别把 '+f.id+'_left 和 '+f.id+'_right 的 UF2 刷入对应半边，'+sideName(f.split.master)+'是 central（连接电脑），另一侧为 peripheral；左右之间使用蓝牙。':''}\n\n先核对主控型号、引脚接线和二极管方向。通用 RP2040 使用原生 GP0–GP29，请核对 PCB 实际引出和占用情况；SparkFun Pro Micro RP2040 使用兼容接口映射。名称中的非 ASCII 字符会替换；ZMK 名称限制为 16 字符。USB VID：${normalizeUsbId(usbIds(f).vid)}，PID：${normalizeUsbId(usbIds(f).pid)}，来自软件“固件目标”中的设置。${f.target==='zmk'?'这两个 ID 用于 USB 连接，蓝牙名称及配对标识单独管理。':''}\n`;
   }
   function generate(project){
     // 导入时容错，导出时严格校验，不能先清洗而掩盖非法配置。
@@ -260,25 +369,34 @@
     const p=normalizeProject(project),keys=ordered(p),attrs=physical(keys.map(k=>isSplit(f)&&k.fw.side==='right'?{...k,fw:{...k.fw,row:k.fw.row+f.rows}}:k)),files=[],display=ascii(f.displayName)||'Keyboard';
     const add=(path,content)=>files.push({path,content});
     if(f.target==='qmk'){
-      const keyboard={keyboard_name:display,manufacturer:'Keyboard Workshop',maintainer:'keyboard-workshop',usb:{...Object.fromEntries(Object.entries(usbIds(f)).map(([prop,value])=>[prop,normalizeUsbId(value)])),device_version:'1.0.0'},development_board:'promicro',diode_direction:f.diode.toUpperCase(),matrix_pins:{rows:f.rowPins.map(n=>pinName(f,n)),cols:f.colPins.map(n=>pinName(f,n))},features:{bootmagic:true,extrakey:true,mousekey:true},layouts:{LAYOUT:{layout:attrs}}};
+      const keyboard={keyboard_name:display,manufacturer:'Keyboard Workshop',maintainer:'keyboard-workshop',usb:{...Object.fromEntries(Object.entries(usbIds(f)).map(([prop,value])=>[prop,normalizeUsbId(value)])),device_version:'1.0.0'},development_board:'promicro',diode_direction:f.diode.toUpperCase(),matrix_pins:{rows:f.rowPins.map(n=>pinName(f,n)),cols:f.colPins.map(n=>pinName(f,n))},features:{bootmagic:true,extrakey:true,mousekey:true,via:true},layouts:{LAYOUT:{layout:attrs}}};
       if(f.controller==='rp2040'){delete keyboard.development_board;Object.assign(keyboard,{processor:'RP2040',bootloader:'rp2040',board:'GENERIC_RP_RP2040'});}
+      let config=`#pragma once\n#define DYNAMIC_KEYMAP_LAYER_COUNT ${f.layers.length}\n`,rules='VIA_ENABLE = yes\n';
       if(isSplit(f)){
         keyboard.split={enabled:true,serial:{driver:f.controller==='promicro_avr'?'bitbang':'vendor',...(serialMode(f)==='full_duplex'?{}:{pin:pinName(f,f.split.serialPin)})},matrix_pins:{right:{rows:f.split.right.rowPins.map(n=>pinName(f,n)),cols:f.split.right.colPins.map(n=>pinName(f,n))}},transport:{sync:{matrix_state:true}}};
-        let config='#pragma once\n#define MASTER_'+f.split.master.toUpperCase()+'\n';
+        config+=`#define MASTER_${f.split.master.toUpperCase()}\n`;
         if(serialMode(f)==='full_duplex')config+=`#define SERIAL_USART_FULL_DUPLEX\n#define SERIAL_USART_TX_PIN ${pinName(f,f.split.serialPin)}\n#define SERIAL_USART_RX_PIN ${pinName(f,f.split.serialRxPin)}\n`;
         if(f.controller==='rp2040')config+='#define RP2040_BOOTLOADER_DOUBLE_TAP_RESET\n';
         const pt=f.split.pointing;
         if(pt?.enabled){
           config+=`#define SPLIT_POINTING_ENABLE\n#define POINTING_DEVICE_${pt.side.toUpperCase()}\n#define I2C_DRIVER I2CD1\n#define I2C1_SDA_PIN GP${pt.sda}\n#define I2C1_SCL_PIN GP${pt.scl}\n#define I2C1_CLOCK_SPEED 400000\n#define AZOTEQ_IQS5XX_${pt.model}\n${pt.rotation?`#define AZOTEQ_IQS5XX_ROTATION_${pt.rotation}\n`:''}`;
-          add(`keyboards/handwired/${f.id}/rules.mk`,'POINTING_DEVICE_ENABLE = yes\nPOINTING_DEVICE_DRIVER = azoteq_iqs5xx\nI2C_DRIVER_REQUIRED = yes\n');
+          rules+='POINTING_DEVICE_ENABLE = yes\nPOINTING_DEVICE_DRIVER = azoteq_iqs5xx\nI2C_DRIVER_REQUIRED = yes\n';
           add(`keyboards/handwired/${f.id}/halconf.h`,'#pragma once\n#define HAL_USE_I2C TRUE\n#include_next <halconf.h>\n');
           add(`keyboards/handwired/${f.id}/mcuconf.h`,'#pragma once\n#include_next <mcuconf.h>\n#undef RP_I2C_USE_I2C1\n#define RP_I2C_USE_I2C1 TRUE\n');
         }
-        add(`keyboards/handwired/${f.id}/config.h`,config);
       }
+      add(`keyboards/handwired/${f.id}/config.h`,config);
+      add(`keyboards/handwired/${f.id}/rules.mk`,rules);
       add(`keyboards/handwired/${f.id}/keyboard.json`,json(keyboard));
       add(`keyboards/handwired/${f.id}/keymaps/default/keymap.json`,json({version:1,keyboard:`handwired/${f.id}`,keymap:'default',layout:'LAYOUT',layers:f.layers.map((_,i)=>keys.map(k=>qmkAction(k.fw.bindings[i])))}));
-      add('.github/workflows/build.yml',`name: Build QMK firmware\non: [push, pull_request, workflow_dispatch]\npermissions:\n  contents: read\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    container: ghcr.io/qmk/qmk_cli:latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/checkout@v4\n        with:\n          repository: qmk/qmk_firmware\n          ref: ${QMK_VERSION}\n          path: qmk_firmware\n          submodules: recursive\n          fetch-depth: 1\n      - name: Install QMK CLI dependencies\n        run: pip install -r qmk_firmware/requirements.txt\n      - name: Configure QMK CLI\n        run: qmk config user.qmk_home="$GITHUB_WORKSPACE/qmk_firmware"\n      - name: Add keyboard definition\n        run: mkdir -p qmk_firmware/keyboards/handwired && cp -R keyboards/handwired/${f.id} qmk_firmware/keyboards/handwired/\n      - name: Compile\n        working-directory: qmk_firmware\n        run: qmk compile -kb handwired/${f.id} -km default${f.controller==='promicro_rp2040'?' -e CONVERT_TO=sparkfun_pm2040':''}\n      - uses: actions/upload-artifact@v4\n        with:\n          name: firmware\n          if-no-files-found: error\n          path: |\n            qmk_firmware/*.hex\n            qmk_firmware/*.uf2\n            qmk_firmware/*.bin\n`);
+      const via={name:display,vendorId:normalizeUsbId(usbIds(f).vid),productId:normalizeUsbId(usbIds(f).pid),matrix:{rows:f.rows*(isSplit(f)?2:1),cols:f.cols},layouts:{keymap:compatibilityLayout(attrs)}};
+      const vialKeys=vialUnlockKeys(keys,f),vialRows=vialKeys.map(k=>k[0]),vialCols=vialKeys.map(k=>k[1]);
+      add(`keyboards/handwired/${f.id}/via.json`,json(via));
+      add(`keyboards/handwired/${f.id}/keymaps/vial/vial.json`,json({name:display,vendorId:via.vendorId,productId:via.productId,matrix:via.matrix,layouts:via.layouts}));
+      add(`keyboards/handwired/${f.id}/keymaps/vial/keymap.c`,qmkCKeymap(f.layers,keys));
+      add(`keyboards/handwired/${f.id}/keymaps/vial/config.h`,`#pragma once\n#define VIAL_KEYBOARD_UID {${vialUid(f).join(', ')}}\n#define VIAL_UNLOCK_COMBO_ROWS { ${vialRows.join(', ')} }\n#define VIAL_UNLOCK_COMBO_COLS { ${vialCols.join(', ')} }\n`);
+      add(`keyboards/handwired/${f.id}/keymaps/vial/rules.mk`,'VIA_ENABLE = yes\nVIAL_ENABLE = yes\nLTO_ENABLE = yes\n');
+      add('.github/workflows/build.yml',`name: Build QMK VIA and Vial firmware\non: [push, pull_request, workflow_dispatch]\npermissions:\n  contents: read\n\njobs:\n  build:\n    runs-on: ubuntu-latest\n    container: ghcr.io/qmk/qmk_cli:latest\n    steps:\n      - uses: actions/checkout@v4\n      - uses: actions/checkout@v4\n        with:\n          repository: qmk/qmk_firmware\n          ref: ${QMK_VERSION}\n          path: qmk_firmware\n          submodules: recursive\n          fetch-depth: 1\n      - name: Install QMK CLI dependencies\n        run: pip install -r qmk_firmware/requirements.txt\n      - name: Configure QMK CLI\n        run: qmk config user.qmk_home="$GITHUB_WORKSPACE/qmk_firmware"\n      - name: Add keyboard definition\n        run: mkdir -p qmk_firmware/keyboards/handwired && cp -R keyboards/handwired/${f.id} qmk_firmware/keyboards/handwired/\n      - name: Compile VIA firmware\n        working-directory: qmk_firmware\n        run: qmk compile -kb handwired/${f.id} -km default${f.controller==='promicro_rp2040'?' -e CONVERT_TO=sparkfun_pm2040':''}\n      - name: Stage VIA firmware\n        run: |\n          mkdir -p dist/via\n          for ext in hex uf2 bin; do for file in qmk_firmware/*.$ext; do if [ -f "$file" ]; then cp "$file" dist/via/; fi; done; done\n      - uses: actions/checkout@v4\n        with:\n          repository: vial-kb/vial-qmk\n          ref: ${VIAL_QMK_VERSION}\n          path: vial_qmk\n          submodules: recursive\n          fetch-depth: 1\n      - name: Install Vial QMK dependencies\n        run: pip install -r vial_qmk/requirements.txt\n      - name: Configure QMK CLI for Vial\n        run: qmk config user.qmk_home="$GITHUB_WORKSPACE/vial_qmk"\n      - name: Add keyboard definition to Vial QMK\n        run: mkdir -p vial_qmk/keyboards/handwired && cp -R keyboards/handwired/${f.id} vial_qmk/keyboards/handwired/\n      - name: Compile Vial firmware\n        working-directory: vial_qmk\n        run: qmk compile -kb handwired/${f.id} -km vial${f.controller==='promicro_rp2040'?' -e CONVERT_TO=sparkfun_pm2040':''}\n      - name: Stage Vial firmware\n        run: |\n          mkdir -p dist/vial\n          for ext in hex uf2 bin; do for file in vial_qmk/*.$ext; do if [ -f "$file" ]; then cp "$file" dist/vial/; fi; done; done\n      - uses: actions/upload-artifact@v4\n        with:\n          name: firmware\n          if-no-files-found: error\n          path: dist/\n`);
     }else{
       const board=f.controller==='nice_nano_v2'?'nice_nano_v2':'sparkfun_pro_micro_rp2040',upper=f.id.toUpperCase();
       const pins=(values,input)=>values.map(n=>`<&pro_micro ${n} ${input?'(GPIO_ACTIVE_HIGH | GPIO_PULL_DOWN)':'GPIO_ACTIVE_HIGH'}>`).join(', ');
@@ -312,5 +430,5 @@
     const root=f.target==='qmk'?`${f.id}-qmk`:`zmk-config-${f.id}`;files.unshift({path:'README.md',content:readme(f,display,root)});return {root,files,...result};
   }
   function actionLabel(a){if(!a||a.t==='none')return '无功能';if(a.t==='trans')return '▽';if(a.t!=='kc')return a.t.toUpperCase()+a.l;const symbols={LCTL:'⌃',RCTL:'⌃',LSFT:'⇧',RSFT:'⇧',LALT:'⌥',RALT:'⌥',LGUI:'⌘',RGUI:'⌘'};return (a.m||[]).map(m=>symbols[m]).join('')+(codeMap.get(a.k)?.label||a.k);}
-  const api={GPIO,AVR,pinOptions,isSplit,serialMode,supportsFullDuplex,serialPins,sideConfig,sideName,enableSplit,switchController,suggestSides,suggestSplitMatrix,matrixLabel,MODS,QMK_VERSION,ZMK_VERSION,normalizeUsbId,usbIds,keycodes,sanitizeFirmware,sanitizeAction,normalizeProject,populateBaseLayer,suggestMatrix,inferBinding,validate,generate,qmkAction,zmkAction,defaultAction,actionLabel,physical};if(typeof module!=='undefined')module.exports=api;else root.FW=api;
+  const api={GPIO,AVR,pinOptions,pinLabel,isSplit,serialMode,supportsFullDuplex,serialPins,sideConfig,sideName,enableSplit,switchController,suggestSides,suggestSplitMatrix,matrixLabel,MODS,QMK_VERSION,VIAL_QMK_VERSION,ZMK_VERSION,normalizeUsbId,usbIds,keycodes,sanitizeFirmware,sanitizeAction,normalizeProject,populateBaseLayer,suggestMatrix,inferBinding,validate,wiringDiagram,generate,qmkAction,zmkAction,defaultAction,actionLabel,physical};if(typeof module!=='undefined')module.exports=api;else root.FW=api;
 })(typeof window!=='undefined'?window:globalThis);

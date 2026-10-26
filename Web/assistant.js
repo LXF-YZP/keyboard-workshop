@@ -72,7 +72,7 @@
   }
   function workflowCard(kind,args,task){
     const names={project_workflow:'工程',file_workflow:'文件',image_workflow:'截图',github_workflow:'GitHub'};
-    const verbs={duplicate:'另存配列',switch:'切换配列',rename:'重命名',undo:'撤销助手修改',open:'选择文件',paste:'读取剪贴板',recognize:'重新识别',labels:'补读文字',roi:'框选区域',calibrate:'校准',publish:'准备发布并编译',download:'下载固件',project:'保存工程',kle:'导出 KLE',dxf:'导出 DXF',svg:'导出 SVG',firmware:'导出固件'};
+    const verbs={duplicate:'另存配列',switch:'切换配列',rename:'重命名',undo:'撤销助手修改',open:'选择文件',paste:'读取剪贴板',recognize:'重新识别',labels:'补读文字',roi:'框选区域',calibrate:'校准',publish:'准备发布并编译',download:'下载固件',project:'保存工程',kle:'导出 KLE',dxf:'导出 DXF',svg:'导出 SVG',firmware:'导出固件',wiring_preview:'预览接线图',wiring_svg:'导出接线图 SVG',wiring_png:'导出接线图 PNG',kicad:'生成 KiCad 工程'};
     const card=node('section',undefined,'assistant-card assistant-workflow'),note=node('p',task.proposed?'请先应用上方提案，再继续。':'等待继续。工程修改仍会生成预览；文件由系统窗口选择。');
     card.dataset.state='pending';card.append(node('h3',names[kind]+' · '+verbs[args.action]),note);
     if(args.name||args.repo||args.part)card.append(node('p',[args.name,args.repo,args.part].filter(Boolean).join(' · ')));

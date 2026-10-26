@@ -49,6 +49,12 @@ test('Choc split plate returns actual mounts and supports DXF/SVG from the same 
  assert.equal(r.checks.blockingErrors.length,0);const info=W.plateInfo(r.next);assert.equal(info.outlineCount,2);assert.equal(info.mounts.length,8);assert.ok(info.mounts.every(m=>m.diameter===2.2&&Number.isFinite(m.x)&&Number.isFinite(m.y)));
  const plate=KB.plate(r.next.keys,r.next.options,r.next.features);assert.match(KB.dxf(plate),/INSUNITS/);assert.match(KB.svg(plate),/<svg/);assert.equal(p.options.pitch,undefined);
 });
+test('key-following concave plate outline is accepted by the shared plate command',()=>{
+ const p=fixture(),r=C.plateProposal(p,{title:'贴合键位边框',parameters:{outline:'contour',margin:2.9,outlineRadius:2}});
+ assert.equal(r.next.options.outline,'contour');assert.equal(r.next.options.margin,2.9);assert.equal(r.next.options.outlineRadius,2);
+ assert.ok(r.changes.some(c=>c.field==='板框'&&c.after==='contour'));
+ assert.ok(KB.plate(r.next.keys,r.next.options,r.next.features).outlines.length>0);
+});
 test('feature commands use mm, assign IDs and validate dimensions and conflicts',()=>{
  const p=fixture(),r=C.plateProposal(p,{title:'开孔',add_features:[{type:'circle',x:70,y:19,w:2.2,name:'圆孔'}]});
  const f=r.next.features[0];assert.equal(f.h,2.2);assert.ok(f.id);assert.equal(r.checks.blockingErrors.length,0);

@@ -1,6 +1,6 @@
 'use strict';
 const {test}=require('node:test'),assert=require('node:assert/strict');
-const C=require('../Web/assistant-core'),KB=require('../Web/core'),FW=require('../Web/firmware');
+const C=require('../Web/assistant-core'),KB=require('../Web/core'),FW=require('../Web/firmware'),Flows=require('../Web/workshop-flows');
 function project(){const p={version:1,name:'Assistant fixture',options:{},features:[],image:null,keys:[],firmware:{version:1,target:'qmk',id:'fixture',displayName:'Fixture',controller:'rp2040',rows:3,cols:3,rowPins:[0,1,2],colPins:[3,4,5],diode:'col2row',layers:[{name:'Base'}]}};for(const side of ['left','right'])for(let r=0;r<3;r++)for(let c=0;c<3;c++)p.keys.push(KB.key({id:`${side}-${r}-${c}`,x:c+(side==='right'?7:0),y:r,label:`${side}-${r}-${c}`,fw:{side,row:r,col:c,bindings:[{t:'kc',k:'A',m:[]}]}}));FW.enableSplit(p.firmware,true);p.firmware.split.serialPin=6;p.firmware.split.right={rowPins:[0,1,2],colPins:[3,4,5]};return p;}
 const refs=p=>new Map([['thumb',C.select(p,{source:'thumb_candidates',side:'right',limit:3,order:'left_to_right'})]]);
 const kc=k=>({t:'kc',k,m:[]});
@@ -29,6 +29,12 @@ test('assistant: thirteen controlled tools match native whitelist and valid enum
  const native=[...swift.match(/static let names: Set<String> = \[(.*?)\]/s)[1].matchAll(/"([^"]+)"/g)].map(m=>m[1]);assert.deepEqual(native.sort(),[...names].sort());
  function check(s){if(s.enum)assert.ok(s.enum.every(v=>typeof v===(s.type==='integer'?'number':s.type)));for(const v of Object.values(s))if(v&&typeof v==='object'){if(Array.isArray(v))v.forEach(x=>x&&typeof x==='object'&&check(x));else check(v);}}
  C.tools.forEach(t=>{assert.equal(t.function.parameters.additionalProperties,false);check(t.function.parameters);});
+});
+test('assistant: file workflow exposes controlled matrix wiring preview and SVG/PNG exports',()=>{
+ const actions=['open','project','kle','dxf','svg','firmware','wiring_preview','wiring_svg','wiring_png','kicad'];
+ assert.deepEqual(C.tools.find(t=>t.function.name==='file_workflow').function.parameters.properties.action.enum,actions);
+ for(const action of ['wiring_preview','wiring_svg','wiring_png','kicad'])assert.doesNotThrow(()=>Flows.validateWorkflowArgs('file_workflow',{action}));
+ assert.throws(()=>Flows.validateWorkflowArgs('file_workflow',{action:'wiring_raw'}));
 });
 test('assistant: maximum bounded proposal supports 10 layers with transparent defaults',()=>{const p=project();const r=C.propose(p,changes([{t:'mo',l:9}]),refs(p));assert.equal(r.next.firmware.layers.length,10);assert.ok(r.next.keys.every(k=>k.fw.bindings.length===10));assert.equal(r.next.keys[0].fw.bindings[9].t,'trans');});
 test('assistant: generated QMK files reflect proposal bindings',()=>{const p=project(),r=C.propose(p,changes(),refs(p)),g=FW.generate(r.next);assert.deepEqual(g.errors,[]);const keymap=JSON.parse(g.files.find(f=>f.path.endsWith('/keymap.json')).content);assert.ok(keymap.layers[0].includes('MO(2)'));assert.ok(keymap.layers[0].includes('KC_SPC'));});

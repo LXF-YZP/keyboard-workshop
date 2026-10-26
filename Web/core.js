@@ -1,5 +1,6 @@
 (function (root) {
   'use strict';
+  const CAD=typeof module!=='undefined'?require('./plate-cad'):root.PlateCAD;
   const uid = () => 'k' + Math.random().toString(36).slice(2, 11);
   const finite = (v, fallback = 0) => Number.isFinite(Number(v)) ? Number(v) : fallback;
   const round = v => Math.round(v * 1000000) / 1000000;
@@ -125,6 +126,62 @@
     for(const p of list.reverse()) { while(upper.length>=2 && cross(upper[upper.length-2],upper[upper.length-1],p)<=0) upper.pop(); upper.push(p); }
     return lower.slice(0,-1).concat(upper.slice(0,-1));
   }
+  function polygonUnion(input) {
+    const polygons=input.filter(p=>Array.isArray(p)&&p.length>=3).map(p=>signedArea(p)>0?p:p.slice().reverse());
+    if(!polygons.length)return {outlines:[],holes:[]};
+    const boxes=polygons.map(points=>bounds(points)),edges=[];
+    polygons.forEach((points,polygon)=>points.forEach((a,index)=>{
+      const b=points[(index+1)%points.length];
+      edges.push({a,b,polygon,minX:Math.min(a.x,b.x),maxX:Math.max(a.x,b.x),minY:Math.min(a.y,b.y),maxY:Math.max(a.y,b.y),cuts:[0,1]});
+    }));
+    const cross=(a,b)=>a.x*b.y-a.y*b.x,sub=(a,b)=>({x:a.x-b.x,y:a.y-b.y}),EPS=1e-9;
+    for(let i=0;i<edges.length;i++)for(let j=i+1;j<edges.length;j++){
+      const a=edges[i],b=edges[j];
+      if(a.polygon===b.polygon||a.maxX<b.minX-EPS||b.maxX<a.minX-EPS||a.maxY<b.minY-EPS||b.maxY<a.minY-EPS)continue;
+      const r=sub(a.b,a.a),s=sub(b.b,b.a),q=sub(b.a,a.a),den=cross(r,s),rr=r.x*r.x+r.y*r.y,ss=s.x*s.x+s.y*s.y;
+      if(Math.abs(den)>EPS){
+        const t=cross(q,s)/den,u=cross(q,r)/den;
+        if(t>=-EPS&&t<=1+EPS&&u>=-EPS&&u<=1+EPS){a.cuts.push(Math.max(0,Math.min(1,t)));b.cuts.push(Math.max(0,Math.min(1,u)));}
+      }else if(Math.abs(cross(q,r))<=EPS){
+        const t0=((b.a.x-a.a.x)*r.x+(b.a.y-a.a.y)*r.y)/rr,t1=((b.b.x-a.a.x)*r.x+(b.b.y-a.a.y)*r.y)/rr;
+        const lo=Math.max(0,Math.min(t0,t1)),hi=Math.min(1,Math.max(t0,t1));
+        if(hi>=lo-EPS){a.cuts.push(lo,hi);for(const t of [lo,hi]){const p={x:a.a.x+r.x*t,y:a.a.y+r.y*t};b.cuts.push(Math.max(0,Math.min(1,((p.x-b.a.x)*s.x+(p.y-b.a.y)*s.y)/ss)));}}
+      }
+    }
+    const occupied=p=>{
+      for(let i=0;i<polygons.length;i++){const b=boxes[i];if(p.x>=b.x-EPS&&p.x<=b.x+b.w+EPS&&p.y>=b.y-EPS&&p.y<=b.y+b.h+EPS&&inside(p,polygons[i]))return true;}
+      return false;
+    };
+    const boundary=[],seen=new Set(),probe=1e-5;
+    for(const e of edges){
+      const cuts=e.cuts.sort((a,b)=>a-b).filter((t,i,list)=>!i||Math.abs(t-list[i-1])>1e-8),dx=e.b.x-e.a.x,dy=e.b.y-e.a.y,len=Math.hypot(dx,dy);
+      for(let i=1;i<cuts.length;i++){
+        const t0=cuts[i-1],t1=cuts[i];if(t1-t0<1e-9)continue;
+        const a={x:e.a.x+dx*t0,y:e.a.y+dy*t0},b={x:e.a.x+dx*t1,y:e.a.y+dy*t1},mx=(a.x+b.x)/2,my=(a.y+b.y)/2,nx=-dy/len*probe,ny=dx/len*probe;
+        if(!occupied({x:mx+nx,y:my+ny})||occupied({x:mx-nx,y:my-ny}))continue;
+        const key=[a.x,a.y,b.x,b.y].map(v=>Math.round(v*1e6)).join(',');if(seen.has(key))continue;seen.add(key);boundary.push({a,b});
+      }
+    }
+    if(!boundary.length)throw Error('无法生成键位外扩板框，请检查键位是否重叠或调整边距。');
+    const nodes=[],node=p=>{for(let i=0;i<nodes.length;i++)if(Math.hypot(nodes[i].p.x-p.x,nodes[i].p.y-p.y)<1e-5)return i;nodes.push({p,out:[],in:0});return nodes.length-1;},segments=[];
+    for(const e of boundary){const a=node(e.a),b=node(e.b);if(a===b)continue;segments.push({a,b});nodes[a].out.push(segments.length-1);nodes[b].in++;}
+    if(nodes.some(n=>n.out.length!==n.in||n.out.length>1))throw Error('键位外扩轮廓存在相切分叉，请调整键位或边距，或改用 CAD 手动边框。');
+    const used=new Set(),loops=[];
+    for(let first=0;first<segments.length;first++){
+      if(used.has(first))continue;
+      const path=[],start=segments[first].a;let edge=first,guard=0,closed=false;
+      while(edge!==undefined&&!used.has(edge)&&guard++<=segments.length){
+        used.add(edge);const segment=segments[edge];path.push({...nodes[segment.a].p,bulge:0});const end=segment.b;
+        if(end===start){closed=true;break;}edge=nodes[end].out.find(candidate=>!used.has(candidate));
+      }
+      if(!closed||path.length<3)throw Error('键位外扩板框没有形成闭合轮廓，请改用 CAD 手动边框。');
+      const simplified=path.filter((p,i)=>{const a=path[(i+path.length-1)%path.length],b=path[(i+1)%path.length],u=sub(p,a),v=sub(b,p);return Math.abs(cross(u,v))>1e-8*Math.max(1,Math.hypot(u.x,u.y)*Math.hypot(v.x,v.y));});
+      if(simplified.length<3)throw Error('键位外扩板框转角无效，请检查配列。');
+      loops.push(simplified);
+    }
+    const depths=loops.map((path,i)=>loops.filter((other,j)=>j!==i&&inside(path[0],other)).length);
+    return {outlines:loops.filter((_,i)=>depths[i]%2===0),holes:loops.filter((_,i)=>depths[i]%2===1)};
+  }
   function intersects(a,b) {
     for (const poly of [a,b]) for(let i=0;i<poly.length;i++) {
       const p=poly[i], q=poly[(i+1)%poly.length], axis={x:q.y-p.y,y:p.x-q.x};
@@ -223,6 +280,7 @@
   // Positive distance grows the polygon (outlines, frame material); negative shrinks it (holes).
   function compensate(s, distance) {
     if(!distance)return s.path;
+    if(s.custom)return CAD.offsetPath(s.path,distance);
     const moved=offsetPolygon(s.sharp,distance);
     if(crossesItself(moved)||Math.sign(signedArea(moved))!==Math.sign(signedArea(s.sharp)))throw Error('切缝补偿后轮廓失效，请减小补偿值。');
     const convex=convexFlags(s.sharp);
@@ -484,6 +542,7 @@
   }
   function plate(keys, options = {}, features = []) {
     checkKeys(keys); const o={...defaults,...options};
+    if(!['hull','contour','rectangle','split','capture','custom'].includes(o.outline))throw Error('请选择有效的定位板外框类型。');
     if(!Number.isFinite(o.pitch) || o.pitch<10 || o.pitch>30 || !Number.isFinite(o.hole) || o.hole<8 || o.hole>20 || !Number.isFinite(o.margin) || o.margin<1 || o.margin>50) throw Error('请检查键距（10–30 mm）、轴孔（8–20 mm）和边距（1–50 mm）。');
     if(o.pitchY!==null&&(!Number.isFinite(o.pitchY)||o.pitchY<10||o.pitchY>30)) throw Error('请检查纵向键距（10–30 mm），或留空与横向相同。');
     if(!Number.isFinite(o.holeRadius) || o.holeRadius<0 || o.holeRadius>2 || !Number.isFinite(o.outlineRadius) || o.outlineRadius<0 || o.outlineRadius>50 || !Number.isFinite(o.kerf) || o.kerf<0 || o.kerf>1) throw Error('请检查开孔内角（0–2 mm）、板框圆角（0–50 mm）和切缝补偿（0–1 mm）。');
@@ -492,26 +551,36 @@
     if(!['none','sandwich'].includes(o.caseType)||!Number.isFinite(o.frameWidth)||o.frameWidth<2||o.frameWidth>40||!Number.isFinite(o.usbWidth)||o.usbWidth<0||o.usbWidth>40||(o.usbX!==null&&!Number.isFinite(o.usbX))) throw Error('请检查外壳类型、中框宽度（2–40 mm）和 USB 开口宽度（0–40 mm）。');
     const actual=keys.filter(k=>!k.decal); if(!actual.length) throw Error('没有实体按键可生成轴孔。');
     const px=o.pitch,py=o.pitchY??o.pitch;
-    const polygons=[], circles=[], sharpOutlines=[], errors=[], warnings=[];
+    const polygons=[], circles=[], sharpOutlines=[],outlineVoids=[], errors=[], warnings=[];
+    const custom=o.outline==='custom'?CAD.normalizeGeometry(o.cadGeometry):null;
+    const rawShape=path=>({custom:true,sharp:CAD.flatten(path),radii:CAD.flatten(path).map(()=>0),reduced:false,path,points:CAD.flatten(path)});
+    if(o.cadDraft)errors.push('CAD 边框仍在编辑，请先应用边框或放弃草稿再导出。');
     const mid=(Math.min(...actual.map(k=>k.x*px))+Math.max(...actual.map(k=>k.x*px)))/2;
     // Decals marked plateOutline (e.g. a trackpad area) widen the outline without getting a cutout.
     const outlineKeys=keys.filter(k=>!k.decal||k.plateOutline);
     const groups=o.outline==='split' ? [outlineKeys.filter(k=>k.x*px<mid),outlineKeys.filter(k=>k.x*px>=mid)] : [outlineKeys];
-    for(const group of groups) {
+    for(const group of custom?[]:groups) {
       if(!group.length) continue;
       const pts=group.flatMap(k=>keyFootprint(k,o.margin,px,py));
       if(o.outline==='rectangle') { const b=bounds(pts); sharpOutlines.push(rectangle(b.x+b.w/2,b.y+b.h/2,b.w,b.h)); }
+      else if(o.outline==='contour'){
+        const union=polygonUnion(group.map(k=>keyFootprint(k,o.margin,px,py)));
+        sharpOutlines.push(...union.outlines);outlineVoids.push(...union.holes);
+      }
       else if(o.outline==='capture') {
         if(sharpOutlines.length)continue;
         try { sharpOutlines.push(outlinePoints(o.outlinePoints||[]).map(p=>({x:p.x*px,y:p.y*py}))); }
         catch(e) { errors.push(e.message); }
       } else sharpOutlines.push(hull(pts));
     }
-    if(o.outline==='capture'&&!sharpOutlines.length) errors.push('请在截图上描绘并闭合键盘轮廓，或切换回自动板框。');
-    const outlineShapes=sharpOutlines.map(sharp=>shape(sharp,o.outlineRadius)),outlines=outlineShapes.map(s=>s.points);
-    if(outlineShapes.some(s=>s.reduced)) warnings.push('部分板框边长不足，这些转角的圆角已按可用长度减小。');
-    if(outlines.length===2 && polygonIntersects(outlines[0],outlines[1])) errors.push('左右分体外框相交，请增加两半间距或减小边距。');
+    if(o.outline==='contour'&&!sharpOutlines.length)errors.push('无法从当前键位生成贴合板框，请检查配列。');
+    if(o.outline==='contour'&&o.caseType==='sandwich'&&outlineVoids.length)errors.push('沿键位外扩板框含有内凹闭环，当前不能自动生成三明治中框；请改用 CAD 调整或取消三明治外壳。');
+    const outlineShapes=custom?custom.outlines.map(rawShape):sharpOutlines.map(sharp=>shape(sharp,o.outlineRadius)),outlines=outlineShapes.map(s=>s.points);
+    const outlineVoidShapes=outlineVoids.map(sharp=>shape(sharp,o.outlineRadius));
+    if([...outlineShapes,...outlineVoidShapes].some(s=>s.reduced)) warnings.push('部分板框边长不足，这些转角的圆角已按可用长度减小。');
+    for(let i=0;i<outlines.length;i++)for(let j=i+1;j<outlines.length;j++)if(polygonIntersects(outlines[i],outlines[j]))errors.push('定位板外框相交或互相包含，请修正边框。');
     const addHole=(layer,local,x,y,angle,source,radius=o.holeRadius)=>{const sharp=place(local,x,y,angle);polygons.push({layer,source,...shape(sharp,convexFlags(sharp).map(c=>c?radius:0))});};
+    if(!custom?.replaceHoles){
     actual.forEach((k,i)=> {
       const x=k.x*px,y=k.y*py,stab=k.stab||'auto';
       const size=Math.max(k.w,k.h);
@@ -544,18 +613,20 @@
       if(f.type==='circle') circles.push({layer:'MOUNT',x:f.x,y:f.y,r:f.w/2,source:f.name||'圆孔'});
       else addHole('MODULE',rectangle(0,0,f.w,f.h),f.x,f.y,f.angle,f.name||'模块开孔');
     }
+    }
+    if(custom?.replaceHoles){polygons.length=0;circles.length=0;custom.holes.forEach((h,i)=>polygons.push({layer:h.layer,source:`DXF 开孔 ${i+1}`,...rawShape(h.path)}));warnings.push('当前使用 DXF 中的开孔；配列轴孔、模块孔和自动固定孔参数不参与本定位板。');}
     const sandwich=o.caseType==='sandwich'&&outlineShapes.length>0,usbX=o.usbX??(outlines.length?bounds(outlines.flat()).x+bounds(outlines.flat()).w/2:0);
     // Reserve the USB slot through the frame wall so no mount hole lands inside it.
     const usbHits=sandwich&&o.usbWidth>0?outlineShapes.map(s=>topHit(s.points,usbX)).filter(Boolean):[];
     const usbSlot=usbHits.length?rectangle(usbX,Math.min(...usbHits.map(h=>h.y))+o.frameWidth/2,o.usbWidth,o.frameWidth+2):null;
     const mounts=[];
-    if(o.mountHoles>0&&outlineShapes.length) {
+    if(o.mountHoles>0&&outlineShapes.length&&!custom?.replaceHoles) {
       const blockers=polygons.map(h=>({points:h.points,box:bounds(h.points)})).concat(circles.map(c=>{const points=circlePoints(c);return {points,box:bounds(points)};}));
       if(usbSlot) blockers.push({points:usbSlot,box:bounds(usbSlot)});
       outlineShapes.forEach((s,g)=>{
         try {
           const {centers,missing}=placeMountHoles(s,o,blockers);
-          const prefix=outlineShapes.length>1?(g?'右半':'左半'):'';
+          const prefix=o.outline==='split'&&outlineShapes.length>1?(g?'右半':'左半'):outlineShapes.length>1?`板片 ${g+1} `:'';
           centers.forEach(p=>{const c={layer:'MOUNT',x:p.x,y:p.y,r:o.mountDiameter/2,source:`${prefix}自动固定孔 ${mounts.length+1}`,auto:true};mounts.push(c);blockers.push({points:circlePoints(c),box:bounds(circlePoints(c))});});
           if(missing.length) errors.push(`${prefix}第 ${missing.join('、')} 个自动固定孔找不到空位，请减少数量、调整孔心距或加大外框边距。`);
         } catch(e) { errors.push(e.message); }
@@ -565,13 +636,19 @@
     const holes=polygons.concat(circles.map(c=>({...c,points:circlePoints(c)})));
     const boxes=holes.map(h=>bounds(h.points)),overlap=(a,b)=>a.x<=b.x+b.w&&b.x<=a.x+a.w&&a.y<=b.y+b.h&&b.y<=a.y+a.h;
     for(let i=0;i<holes.length;i++) {
-      if(!outlines.some(poly=>holes[i].points.every(p=>inside(p,poly))&&!poly.some((p,n)=>holes[i].points.some((q,m)=>segmentsIntersect(p,poly[(n+1)%poly.length],q,holes[i].points[(m+1)%holes[i].points.length]))))) errors.push(`${holes[i].source} 超出定位板外框，请调整开孔或边距。`);
+      if(outlines.length&&!outlines.some(poly=>holes[i].points.every(p=>inside(p,poly))&&!poly.some((p,n)=>holes[i].points.some((q,m)=>segmentsIntersect(p,poly[(n+1)%poly.length],q,holes[i].points[(m+1)%holes[i].points.length]))))) errors.push(`${holes[i].source} 超出定位板外框，请调整开孔或边距。`);
       for(let j=i+1;j<holes.length;j++) if(overlap(boxes[i],boxes[j])&&polygonIntersects(holes[i].points,holes[j].points)) errors.push(`${holes[i].source} 与 ${holes[j].source} 开孔相交。`);
     }
-    const parts=[{id:'plate',name:'定位板',outlineLayer:'OUTLINE',outlines:outlineShapes,holes:polygons,circles}];
+    const contourCuts=outlineVoidShapes.map((s,i)=>({layer:'OUTLINE',source:`轮廓内空区 ${i+1}`,...s}));
+    const parts=[{id:'plate',name:'定位板',outlineLayer:'OUTLINE',outlines:outlineShapes,holes:polygons.concat(contourCuts),circles}];
     if(sandwich) {
       const frameOutlines=[],openings=[],openingChecks=[];let usbDone=!o.usbWidth;
       outlineShapes.forEach(s=>{
+        if(s.custom){
+          try{const opening=rawShape(CAD.offsetPath(s.path,-o.frameWidth));openingChecks.push(opening.points);frameOutlines.push(s);openings.push({layer:'FRAME_OPENING',source:'中框开口',...opening});}catch(e){errors.push('自定义中框：'+e.message);}
+          if(o.usbWidth>0)errors.push('自定义板框暂不支持自动 USB 开口，请将 USB 开口宽度设为 0。');
+          return;
+        }
         const W=o.frameWidth,inner=offsetPolygon(s.sharp,-W);
         if(crossesItself(inner)||Math.sign(signedArea(inner))!==Math.sign(signedArea(s.sharp))){errors.push('中框宽度超过板框可用范围，开口轮廓无效。');return;}
         const convex=convexFlags(inner),innerRadii=inner.map((p,i)=>convex[i]?Math.max(o.holeRadius,s.radii[i]-W,0):s.radii[i]>0?s.radii[i]+W:0);
@@ -604,7 +681,7 @@
     for(const part of parts) part.toolpaths=cut(part);
     if(d>0)warnings.push(`DXF 刀路已按 ${round(o.kerf)} mm 切缝补偿：开孔向内、板框向外各偏移 ${round(d)} mm；预览与检查按成品尺寸。`);
     const preview=parts.map(p=>({id:p.id,name:p.name,outlineLayer:p.outlineLayer,outlines:p.outlines.map(s=>s.points),holes:p.holes.map(h=>({layer:h.layer,points:h.points})),circles:p.circles,toolpaths:p.toolpaths}));
-    return {polygons,circles,outlines,toolpaths:parts[0].toolpaths,parts:preview,errors:[...new Set(errors)],warnings,bounds:bounds(outlines.flat()),count:actual.length,options:o};
+    return {design:{outlines:outlineShapes.map(s=>s.path),holes:polygons.map(h=>({layer:h.layer,path:h.path}))},polygons,circles,outlines,toolpaths:parts[0].toolpaths,parts:preview,errors:[...new Set(errors)],warnings,bounds:bounds(outlines.flat()),count:actual.length,options:o};
   }
   // Selected parts are stacked top to bottom with a 12 mm gap so a combined file nests without overlap.
   function layoutParts(result, ids) {

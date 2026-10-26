@@ -141,6 +141,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             }
             readLabels(regions, in: image, token: token)
         case "openLayout": openLayout()
+        case "openDXF": openDXF()
         case "sample":
             if let url = Bundle.main.url(forResource: "42键-TPS65.kle", withExtension: "json"),
                let data = try? Data(contentsOf: url), let text = String(data: data, encoding: .utf8) { send("layout", ["text": text, "name": "42键 · TPS65"]) }
@@ -151,6 +152,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
             panel.beginSheetModal(for: window) { response in
                 guard response == .OK, let url = panel.url else { return }
                 do { try content.write(to: url, atomically: true, encoding: .utf8); self.send("saved", ["name": url.lastPathComponent]) }
+                catch { self.send("error", ["message": error.localizedDescription]) }
+            }
+        case "saveImage":
+            guard let name = body["name"] as? String, let encoded = body["data"] as? String, encoded.count < 70 * 1024 * 1024,
+                  let image = Data(base64Encoded: encoded), image.count <= 50 * 1024 * 1024,
+                  image.starts(with: [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]) else {
+                send("error", ["message": "PNG 图片数据无效或过大。"]); return
+            }
+            let panel = NSSavePanel(); panel.nameFieldStringValue = (name as NSString).lastPathComponent
+            panel.allowedContentTypes = [.png]; panel.canCreateDirectories = true
+            panel.beginSheetModal(for: window) { response in
+                guard response == .OK, let url = panel.url else { return }
+                do { try image.write(to: url, options: .atomic); self.send("saved", ["name": url.lastPathComponent]) }
                 catch { self.send("error", ["message": error.localizedDescription]) }
             }
         case "saveFolder":
@@ -287,6 +301,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, WKScriptMessageHandler
                 DispatchQueue.main.async { self.send("busy", ["message": "正在识别键帽文字 \(done) / \(regions.count)…"]) }
             }
             DispatchQueue.main.async { self.recognizing = false; self.send("labels", ["token": token, "labels": labels]) }
+        }
+    }
+    func openDXF() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "dxf") ?? .data]
+        panel.allowsMultipleSelection = false
+        panel.beginSheetModal(for: window) { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                let size = try url.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                guard size <= 10 * 1024 * 1024 else { throw ImageAnalyzer.problem("DXF 文件不能超过 10 MB。") }
+                let data = try Data(contentsOf: url)
+                guard data.count <= 10 * 1024 * 1024, let text = String(data: data, encoding: .utf8) ?? String(data: data, encoding: .windowsCP1252) else { throw ImageAnalyzer.problem("请导入 ASCII 格式 DXF。") }
+                self.send("dxf", ["text": text, "name": url.lastPathComponent])
+            } catch { self.send("error", ["message": error.localizedDescription]) }
         }
     }
     func openLayout() {

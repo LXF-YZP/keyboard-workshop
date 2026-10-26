@@ -5,13 +5,13 @@ const send = (action, payload={}) => { if(native) window.webkit.messageHandlers.
 let state={version:1,name:'未命名键盘',keys:[],features:[],options:{...KB.defaults},image:null,roi:null,firmware:null,groups:[]};
 let view='layout', tool='select', selected=new Set(), featureID=null, imageElement=null, vision={rectangles:[],words:[]};
 let camera={scale:38,x:40,y:50}, pointer=null, calibration=[], drawBox=null, outlineDraft=[], saveTimer=null, busy=false, lastPlate=null;
-let firmwareLayer=0,firmwareFiles=[],firmwareSide='left';
+let firmwareLayer=0,firmwareFiles=[],firmwareSide='left',wiringPreviewURL=null;
 let githubState={connected:false,busy:false,repositories:[]},githubPending=null;
 let snapPreview=null, plateLayer='plate', labelRequest=null, labelToken=0;
 let layoutRecords=[], activeLayoutId=null, pendingActiveLayoutId=null, layoutStoreReady=!native;
 const CURRENT_LAYOUT_OPTION='__current__';
 const NUMERIC_OPTIONS=['pitch','pitchY','hole','margin','holeRadius','outlineRadius','kerf','mountHoles','mountDiameter','mountInset','frameWidth','usbWidth','usbX'],NULLABLE_OPTIONS=new Set(['pitchY','usbX']);
-const SWITCH_NAMES={square:'方孔','mx-openable':'开盖缺口',alps:'Alps','mx-alps':'MX / Alps'},STAB_NAMES={none:'无卫星轴',pcb:'PCB 避让','mx-basic':'MX Basic','mx-tight':'MX Tight',costar:'Costar','cherry-spec':'Cherry Spec'},OUTLINE_NAMES={hull:'凸包',rectangle:'矩形',split:'左右分体',capture:'截图轮廓'};
+const SWITCH_NAMES={square:'方孔','mx-openable':'开盖缺口',alps:'Alps','mx-alps':'MX / Alps'},STAB_NAMES={none:'无卫星轴',pcb:'PCB 避让','mx-basic':'MX Basic','mx-tight':'MX Tight',costar:'Costar','cherry-spec':'Cherry Spec'},OUTLINE_NAMES={hull:'凸包',contour:'沿键位外形',rectangle:'矩形',split:'左右分体',capture:'截图轮廓',custom:'自定义 CAD'};
 const PART_LEGENDS={plate:[['','板框'],['switch-line','轴孔'],['module-line','模块 / 固定孔'],['stabilizer-line','卫星轴']],frame:[['','中框'],['switch-line','开口'],['module-line','固定孔'],['reference-line','轴孔参考']],bottom:[['','底板'],['module-line','固定孔']]};
 const pitchY=()=>state.options.pitchY??state.options.pitch;
 const pitchText=()=>state.options.pitchY===null||state.options.pitchY===undefined||state.options.pitchY===state.options.pitch?`${state.options.pitch}`:`${state.options.pitch} × ${state.options.pitchY}`;
@@ -38,7 +38,7 @@ function showBusy(message){busy=true;$('busy').hidden=false;$('busyText').textCo
 function hideBusy(){busy=false;$('busy').hidden=true;for(const id of ['openImage','pasteImage','recognize','readKeyLabels','openLayout'])$(id).disabled=false;inspector();}
 function cloneFirmware(firmware){return firmware?JSON.parse(JSON.stringify(firmware)):null;}
 function cloneKeyFirmware(fw){if(!fw)return undefined;return {...('side' in fw?{side:fw.side}:{}),...(fw.baseBindingManual===true?{baseBindingManual:true}:{}),row:Number.isInteger(fw.row)?fw.row:null,col:Number.isInteger(fw.col)?fw.col:null,bindings:(fw.bindings||[]).map(a=>a?.t==='kc'?{t:'kc',k:a.k,m:[...(a.m||[])]}:{...a})};}
-function snapshot(){const project={ ...state,groups:JSON.parse(JSON.stringify(state.groups||[])),firmware:cloneFirmware(state.firmware),keys:state.keys.map(k=>({...k,fw:cloneKeyFirmware(k.fw)})),features:state.features.map(f=>({...f})),options:{...state.options,outlinePoints:(state.options.outlinePoints||[]).map(p=>({...p}))},image:state.image?{...state.image}:null };Object.defineProperty(project,'__layoutId',{value:activeLayoutId,enumerable:false,writable:true});return project;}
+function snapshot(){const project={ ...state,...(state.eda?{eda:{...state.eda}}:{}),groups:JSON.parse(JSON.stringify(state.groups||[])),firmware:cloneFirmware(state.firmware),keys:state.keys.map(k=>({...k,fw:cloneKeyFirmware(k.fw)})),features:state.features.map(f=>({...f})),options:JSON.parse(JSON.stringify(state.options)),image:state.image?{...state.image}:null };Object.defineProperty(project,'__layoutId',{value:activeLayoutId,enumerable:false,writable:true});return project;}
 function remember(){undoStack.push(snapshot());if(undoStack.length>35)undoStack.shift();redoStack.length=0;}
 function hasProjectContent(project=state){return !!(project.image||project.keys?.length||project.features?.length||project.options?.outlinePoints?.length);}
 function layoutTitle(project){return String(project.name||project.image?.name||'未命名配列').trim().slice(0,120)||'未命名配列';}
@@ -83,7 +83,7 @@ function syncLayoutManager(){
 function persistNow(){const project=snapshot();updateActiveLayout(project);syncLayoutManager();if(native){send('autosave',{project,layouts:layoutRecords,activeLayoutId});$('saveStatus').textContent='已自动保存';}else try{localStorage.setItem('keyboard-workshop-v1',JSON.stringify({project,layouts:layoutRecords,activeLayoutId}));$('saveStatus').textContent='已自动保存';}catch(_){try{localStorage.setItem('keyboard-workshop-v1',JSON.stringify(project));$('saveStatus').textContent='已自动保存当前工程';}catch(__){$('saveStatus').textContent='请保存工程文件';}}}
 function persist(){clearTimeout(saveTimer);$('saveStatus').textContent='等待保存…';saveTimer=setTimeout(persistNow,500);}
 function changed(){WorkshopFlows.cleanGroups(state);assistantTouch();ensureFirmwareKeys();ensureActiveLayout();updateActiveLayout(snapshot());sync();persist();}
-function restore(snapshot){assistantTouch(true);pointer=null;drawBox=null;outlineDraft=[];clearSnap();activeLayoutId=snapshot?.__layoutId??null;state=snapshot;selected.clear();featureID=null;loadReference();sync();persist();}
+function restore(snapshot){window.WorkshopCAD?.cancelDraw();assistantTouch(true);pointer=null;drawBox=null;outlineDraft=[];clearSnap();activeLayoutId=snapshot?.__layoutId??null;state=snapshot;selected.clear();featureID=null;loadReference();sync();persist();}
 function undo(){if(!undoStack.length)return;redoStack.push(snapshot());restore(undoStack.pop());status('已撤销。');}
 function redo(){if(!redoStack.length)return;undoStack.push(snapshot());restore(redoStack.pop());status('已重做。');}
 function loadReference(){
@@ -100,12 +100,16 @@ function parseProject(text,name){
     const image=object.image && typeof object.image.data==='string' && /^data:image\/(png|jpeg|webp);base64,/.test(object.image.data) && object.image.data.length<22000000 && [object.image.pitch,object.image.originX,object.image.originY,object.image.width,object.image.height].every(Number.isFinite) && object.image.pitch>0?object.image:null;
     const rawPoints=Array.isArray(object.options?.outlinePoints)?object.options.outlinePoints.slice(0,2000).map(p=>({x:Number(p.x),y:Number(p.y)})):[];
     let savedPoints=[];try{savedPoints=rawPoints.length?KB.outlinePoints(rawPoints):[];}catch(_){savedPoints=[];}
-    const savedOutline=['hull','rectangle','split','capture'].includes(object.options?.outline)?object.options.outline:'hull';
+    const savedOutline=['hull','contour','rectangle','split','capture','custom'].includes(object.options?.outline)?object.options.outline:'hull';
     const roi=object.roi&&[object.roi.x,object.roi.y,object.roi.w,object.roi.h].every(Number.isFinite)&&object.roi.w>0&&object.roi.h>0?{x:Number(object.roi.x),y:Number(object.roi.y),w:Number(object.roi.w),h:Number(object.roi.h)}:null;
     const idMap=new Map(object.keys.map((k,i)=>[k.id,keys[i].id]));
     const groups=Array.isArray(object.groups)?object.groups.slice(0,30).filter(g=>g&&typeof g.name==='string'&&Array.isArray(g.keyIds)).map(g=>({name:g.name.slice(0,40),keyIds:g.keyIds.map(id=>idMap.get(id)).filter(Boolean)})).filter(g=>g.keyIds.length):[];
     const normalized=FW.normalizeProject({firmware:object.firmware,keys}),firmware=normalized.firmware;keys.splice(0,keys.length,...normalized.keys);
     next={version:1,name:String(object.name||name||'导入的工程').slice(0,120),keys,features,options:{...KB.defaults,...object.options,outline:savedOutline,outlinePoints:savedPoints,outlineSource:object.options?.outlineSource==='manual'?'manual':savedPoints.length?'auto':null,mirrorAxis:Number.isFinite(object.options?.mirrorAxis)&&Math.abs(object.options?.mirrorAxis)<=1000?object.options.mirrorAxis:null},image,roi,firmware,groups};
+    if(next.options.cadGeometry)next.options.cadGeometry=PlateCAD.normalizeGeometry(next.options.cadGeometry);
+    if(savedOutline==='custom'&&!next.options.cadGeometry)throw Error('工程缺少自定义 CAD 边框数据。');
+    if(next.options.cadDraft)next.options.cadDraft={entities:PlateCAD.entities(next.options.cadDraft.entities)};
+    if(object.eda&&typeof object.eda==='object'&&!Array.isArray(object.eda))next.eda=Object.fromEntries(['module','switch','diode','mounts'].filter(k=>Object.hasOwn(object.eda,k)).map(k=>[k,k==='mounts'?object.eda[k]===true:String(object.eda[k]).slice(0,60)]));
   }else{
     const parsed=KB.parseKLE(text);next={version:1,name:parsed.name||name,keys:parsed.keys,features:[],options:{...KB.defaults,mirrorAxis:null},image:null,roi:null,firmware:null};
   }
@@ -117,7 +121,7 @@ function loadText(text,name,{archive=true,layoutId=null,statusMessage=true}={}){
   const imported=FW.populateBaseLayer(state);
   selected.clear();featureID=null;vision={rectangles:[],words:[]};loadReference();changed();setView('layout');fit();if(statusMessage){const compound=state.keys.filter(KB.hasCompoundShape).length;status(`已导入${compound?`，含 ${compound} 个 KLE 异形键`:''}。${baseLayerNotice(imported)}请核对键位、旋转和实际键距。`);}
 }
-function setView(next){finishMove();clearSnap();view=next;document.body.dataset.view=view;if(['plate','firmware'].includes(view)&&tool!=='select')setTool('select');document.querySelectorAll('.tabs [data-view]').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));});$('dataPanel').hidden=view!=='data';$('viewLabel').textContent=view==='plate'?plateLayer.toUpperCase():view==='firmware'?'FIRMWARE':'LAYOUT';$('plateLegend').hidden=view!=='plate'||!lastPlate;canvasHint();if(view==='firmware')syncFirmware();if(view==='data')$('rawData').value=state.keys.length?KB.exportKLE(state.keys,state.name,true):'';draw();}
+function setView(next){finishMove();clearSnap();view=next;document.body.dataset.view=view;if(['plate','firmware'].includes(view)&&tool!=='select')setTool('select');document.querySelectorAll('.tabs [data-view]').forEach(b=>{const active=b.dataset.view===view;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));});window.WorkshopCAD?.cancelDraw();$('dataPanel').hidden=view!=='data';$('viewLabel').textContent=view==='plate'?plateLayer.toUpperCase():view==='firmware'?'FIRMWARE':'LAYOUT';$('canvasUnits').textContent=view==='plate'?'单位 / mm':'单位 / U';$('plateLegend').hidden=view!=='plate'||!lastPlate;canvasHint();if(view==='firmware')syncFirmware();window.WorkshopCAD?.sync();if(view==='data')$('rawData').value=state.keys.length?KB.exportKLE(state.keys,state.name,true):'';draw();}
 function setTool(next){finishMove();const enteringAdd=next==='add'&&tool!=='add';tool=next;calibration=[];clearSnap();if(enteringAdd){selected.clear();featureID=null;}document.querySelectorAll('[data-tool]').forEach(b=>{const active=b.dataset.tool===tool;b.classList.toggle('active',active);b.setAttribute('aria-pressed',String(active));});canvas.style.cursor=tool==='select'?'default':'crosshair';if(tool!=='outline'&&outlineDraft.length){outlineDraft=[];}if(enteringAdd)inspector();canvasHint();draw();}
 function snapDescription(snap){
   const target=state.keys.find(k=>k.id===snap.targetID);
@@ -141,7 +145,7 @@ function sync(){
   $('mirrorAxis').value=state.options.mirrorAxis??'';
   $('mirrorAxis').placeholder=state.keys.some(k=>!k.decal)?'自动：'+KB.round(KB.symmetryAxis(state.keys)):'自动中线';
   $('undo').disabled=!undoStack.length;$('redo').disabled=!redoStack.length;
-  syncLayoutManager();syncFirmware();inspector();validate();draw();githubRender();
+  syncLayoutManager();syncFirmware();inspector();validate();window.WorkshopCAD?.sync();draw();githubRender();
 }
 function inspector(){
   firmwareSelection();
@@ -172,6 +176,9 @@ function syncParts(){
   const parts=lastPlate?.parts||[];
   if(!parts.some(p=>p.id===plateLayer))plateLayer='plate';
   for(const b of document.querySelectorAll('[data-part]')){const available=parts.some(p=>p.id===b.dataset.part)||b.dataset.part==='plate';b.disabled=!available;b.title=available?'':'在“固定孔与外壳”中选择三明治外壳后可预览';const active=b.dataset.part===plateLayer;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));}
+  const hasCase=parts.some(p=>p.id==='frame')&&parts.some(p=>p.id==='bottom');
+  $('partAvailability').hidden=hasCase||!state.keys.length;
+  $('partAvailability').textContent='中框和底板尚未生成：展开“固定孔与外壳”，将外壳设为“三明治”。';
   const part=parts.find(p=>p.id===plateLayer);
   $('plateLayerName').textContent=part?.name||'定位板';if(view==='plate')$('viewLabel').textContent=plateLayer.toUpperCase();
   $('exportAllRow').hidden=parts.length<2;
@@ -180,13 +187,14 @@ function syncParts(){
   for(const [cls,text] of PART_LEGENDS[plateLayer]){const span=document.createElement('span'),line=document.createElement('i');line.className='line-sample'+(cls?' '+cls:'');span.append(line,text);legend.append(span);}
 }
 function validate(){
-  const host=$('checks');host.replaceChildren();lastPlate=null;$('plateLegend').hidden=true;plateSummaries();
+  const host=$('checks');host.replaceChildren();lastPlate=null;$('plateLegend').hidden=true;$('fixContourOutline').hidden=true;plateSummaries();
   const badge=$('plateBadge');badge.hidden=true;
   if(!state.keys.length){host.textContent='导入配列后自动检查。';syncParts();return;}
   try{lastPlate=KB.plate(state.keys,state.options,state.features);
+    $('fixContourOutline').hidden=state.options.outline!=='capture'||lastPlate.outlines.length>0;
     $('plateLegend').hidden=view!=='plate';
     const auto=lastPlate.circles.filter(c=>c.auto).length;
-    const lines=lastPlate.errors.length?lastPlate.errors.slice(0,12).map(t=>['check-error','错误 · '+t]):[['check-pass',`通过 · ${lastPlate.count} 个轴孔 · ${lastPlate.outlines.length} 块板${auto?` · ${auto} 个固定孔`:''}`],['check-pass',`外形 ${lastPlate.bounds.w.toFixed(1)} × ${lastPlate.bounds.h.toFixed(1)} mm`]];
+    const lines=lastPlate.errors.length?lastPlate.errors.slice(0,12).map(t=>['check-error','错误 · '+t]):[['check-pass',`通过 · ${state.options.outline==='custom'&&state.options.cadGeometry?.replaceHoles?`${lastPlate.polygons.length} 个导入开孔`:`${lastPlate.count} 个轴孔`} · ${lastPlate.outlines.length} 块板${auto?` · ${auto} 个固定孔`:''}`],['check-pass',`外形 ${lastPlate.bounds.w.toFixed(1)} × ${lastPlate.bounds.h.toFixed(1)} mm`]];
     if(!lastPlate.errors.length&&lastPlate.parts.length>1)lines.push(['check-pass',`外壳 · ${lastPlate.parts.map(p=>p.name).join(' / ')}`]);
     if(lastPlate.errors.length){badge.hidden=false;badge.textContent=String(lastPlate.errors.length);badge.title=`${lastPlate.errors.length} 个几何错误`;}
     for(const t of lastPlate.warnings)lines.push(['check-warning','核对 · '+t]);
@@ -200,6 +208,7 @@ function world(e){const r=canvas.getBoundingClientRect();return{x:(e.clientX-r.l
 function fit(){
   const pts=state.keys.flatMap(k=>KB.keyShape(k));
   if(view==='plate'&&lastPlate)pts.push(...lastPlate.parts.flatMap(p=>p.outlines.flat()).map(v=>({x:v.x/state.options.pitch,y:v.y/pitchY()})));
+  if(view==='plate'&&state.options.cadDraft)pts.push(...state.options.cadDraft.entities.flatMap(PlateCAD.sample).map(p=>({x:p.x/state.options.pitch,y:p.y/pitchY()})));
   if(state.options.outline==='capture'&&state.options.outlinePoints?.length)pts.push(...state.options.outlinePoints);
   let b=KB.bounds(pts);
   if(!state.keys.length && state.image)b={x:-state.image.originX/state.image.pitch,y:-state.image.originY/state.image.pitch,w:state.image.width/state.image.pitch,h:state.image.height/state.image.pitch};
@@ -217,7 +226,7 @@ function draw(){
   if(view==='plate'&&lastPlate){
     const px=state.options.pitch,py=pitchY(),u=points=>points.map(v=>({x:v.x/px,y:v.y/py}));
     const part=lastPlate.parts.find(p=>p.id===plateLayer)||lastPlate.parts[0];ctx.lineWidth=1.6/camera.scale;
-    for(const poly of part.outlines){path(u(poly));ctx.fillStyle=palette.accentSoft;ctx.fill();ctx.strokeStyle=palette.accent;ctx.stroke();}
+    for(const poly of part.outlines){path(u(poly));ctx.fillStyle=state.options.cadDraft&&part.id==='plate'?palette.accentSoft+'55':palette.accentSoft;ctx.fill();ctx.strokeStyle=palette.accent;if(!state.options.cadDraft||part.id!=='plate')ctx.stroke();}
     for(const hole of part.holes){path(u(hole.points));ctx.fillStyle=palette.canvas;ctx.fill();ctx.strokeStyle=['SWITCH','FRAME_OPENING'].includes(hole.layer)?'#555950':palette.muted;ctx.setLineDash(['SWITCH','FRAME_OPENING'].includes(hole.layer)?[]:hole.layer==='MODULE'?[5/camera.scale,3/camera.scale]:[2/camera.scale,3/camera.scale]);ctx.stroke();}
     // Faint switch cutouts show what the frame opening has to clear.
     if(part.id!=='plate'){ctx.strokeStyle=palette.muted;ctx.lineWidth=1/camera.scale;ctx.setLineDash([1.5/camera.scale,2.5/camera.scale]);for(const hole of lastPlate.polygons){path(u(hole.points));ctx.stroke();}ctx.lineWidth=1.6/camera.scale;}
@@ -264,6 +273,7 @@ function draw(){
   if(drawBox){ctx.strokeStyle=palette.accent;ctx.lineWidth=1.5/camera.scale;ctx.setLineDash([.1,.1]);ctx.strokeRect(drawBox.x,drawBox.y,drawBox.w,drawBox.h);ctx.setLineDash([]);}
   if(outlineDraft.length){ctx.strokeStyle=palette.accent;ctx.fillStyle=palette.accentSoft;ctx.lineWidth=1.8/camera.scale;ctx.setLineDash([.14,.1]);path(outlineDraft);ctx.stroke();ctx.setLineDash([]);outlineDraft.forEach((p,i)=>{ctx.beginPath();ctx.arc(p.x,p.y,(i===0?.18:.12),0,Math.PI*2);ctx.fillStyle=i===0?palette.accent:palette.surface;ctx.fill();ctx.strokeStyle=palette.accent;ctx.stroke();});}
   for(const p of calibration){ctx.beginPath();ctx.arc(p.x,p.y,.12,0,Math.PI*2);ctx.fillStyle=palette.accent;ctx.fill();}
+  if(view==='plate')window.WorkshopCAD?.draw(ctx);
   ctx.restore();$('zoomLabel').textContent=Math.round(camera.scale/38*100)+'%';
 }
 function hit(p){return [...state.keys].reverse().find(k=>KB.inside(p,KB.keyShape(k)));}
@@ -311,6 +321,7 @@ function clearOutline(){
 }
 canvas.addEventListener('pointerdown',e=>{
   if(busy||view==='data')return;clearSnap();canvas.focus();canvas.setPointerCapture(e.pointerId);const p=world(e);
+  if(view==='plate'&&window.WorkshopCAD?.pointerDown(e,p))return;
   if(view==='firmware'){const k=hit(p);if(k){featureID=null;if(e.shiftKey){selected.has(k.id)?selected.delete(k.id):selected.add(k.id);}else selected=new Set([k.id]);pointer=null;}else{if(!e.shiftKey)selected.clear();pointer={mode:'pan',x:e.clientX,y:e.clientY,camera:{...camera}};}inspector();draw();return;}
   if(tool==='outline'){
     if(!state.image){status('请先导入截图，再描绘截图键盘轮廓。',true);return;}
@@ -332,7 +343,7 @@ canvas.addEventListener('pointerdown',e=>{
   }else{if(!e.shiftKey){selected.clear();featureID=null;}pointer={mode:'pan',x:e.clientX,y:e.clientY,camera:{...camera}};}
   inspector();draw();
 });
-canvas.addEventListener('pointermove',e=>{if(!pointer)return;const p=world(e);
+canvas.addEventListener('pointermove',e=>{if(view==='plate'&&window.WorkshopCAD?.pointerMove(e,world(e)))return;if(!pointer)return;const p=world(e);
   if(pointer.mode==='pan'){camera.x=pointer.camera.x+e.clientX-pointer.x;camera.y=pointer.camera.y+e.clientY-pointer.y;draw();return;}
   if(pointer.mode==='move'){
     moveSelection(p,e.altKey);return;
@@ -356,7 +367,7 @@ function zoom(f){const {w,h}=viewport(),p={x:(w/2-camera.x)/camera.scale,y:(h/2-
 async function setImage(payload){
   const decoded=await new Promise((resolve,reject)=>{const img=new Image();img.onload=()=>resolve(img);img.onerror=()=>reject(Error('图片无法解码。'));img.src=payload.data;});
   archiveCurrentLayout();
-  remember();assistantTouch(true);imageElement=decoded;state.image={...payload,pitch:payload.width/18,originX:0,originY:0};state.name=payload.name||'截图键盘';state.firmware=null;state.keys=[];state.features=[];state.roi=null;state.options.mirrorAxis=null;state.options.outline='hull';state.options.outlinePoints=[];state.options.outlineSource=null;outlineDraft=[];selected.clear();featureID=null;vision={rectangles:[],words:[]};activeLayoutId=null;
+  remember();assistantTouch(true);imageElement=decoded;state.image={...payload,pitch:payload.width/18,originX:0,originY:0};state.name=payload.name||'截图键盘';state.firmware=null;state.keys=[];state.features=[];state.roi=null;state.options.mirrorAxis=null;state.options.outline='hull';delete state.options.cadGeometry;delete state.options.cadDraft;state.options.outlinePoints=[];state.options.outlineSource=null;outlineDraft=[];selected.clear();featureID=null;vision={rectangles:[],words:[]};activeLayoutId=null;
   state.image.width=imageElement.naturalWidth;state.image.height=imageElement.naturalHeight;changed();setView('layout');fit();
 }
 async function recognize(payload=null){
@@ -424,6 +435,7 @@ async function handleNativeEvent({event,payload}){
     if(event==='image')await setImage(payload);
     if(event==='recognition')await recognize(payload);
     if(event==='labels')applyLabels(payload||{});
+    if(event==='dxf')window.WorkshopCAD?.receiveDXF(payload);
     if(event==='layout'){loadText(payload.text,payload.name);hideBusy();}
     if(event==='busy')showBusy(payload.message);
     if(event==='notice')status(payload.message,!!payload.error);
@@ -541,8 +553,10 @@ for(const property of [...NUMERIC_OPTIONS,'stabilizers','caseType'])$(property).
 };
 for(const [id,property,parse] of [['keyStab','stab',v=>v],['keyRotation','cutoutRotation',Number]])$(id).onchange=()=>{remember();for(const k of state.keys)if(selected.has(k.id))k[property]=parse($(id).value);changed();};
 $('keyPlateOutline').onchange=()=>{remember();for(const k of state.keys)if(selected.has(k.id)&&k.decal)k.plateOutline=$('keyPlateOutline').checked;changed();};
-for(const b of document.querySelectorAll('[data-part]'))b.onclick=()=>{if(b.disabled)return;plateLayer=b.dataset.part;syncParts();canvasHint();draw();};
-$('outline').onchange=()=>{const value=$('outline').value;if(value==='capture'&&!state.image){status('请先导入截图，才能使用截图键盘轮廓。',true);sync();return;}remember();state.options.outline=value;if(value!=='capture'){state.options.outlinePoints=[];state.options.outlineSource=null;outlineDraft=[];setTool('select');}changed();if(value==='capture')startOutlineDraft();};
+for(const b of document.querySelectorAll('[data-part]'))b.onclick=()=>{if(b.disabled)return;plateLayer=b.dataset.part;syncParts();window.WorkshopCAD?.sync();canvasHint();draw();};
+$('outline').onchange=()=>{const value=$('outline').value;if(value==='custom'&&!state.options.cadGeometry){sync();window.WorkshopCAD?.start();return;}if(state.options.cadDraft){status('请先应用边框或放弃 CAD 草稿。',true);sync();return;}if(value==='capture'&&!state.image){status('请先导入截图，才能使用截图键盘轮廓。',true);sync();return;}remember();state.options.outline=value;if(value!=='capture'){state.options.outlinePoints=[];state.options.outlineSource=null;outlineDraft=[];setTool('select');}changed();if(value==='capture')startOutlineDraft();};
+$('contourPreset').onclick=()=>{if(state.options.cadDraft){$('cadPanel').open=true;status('请先放弃或完成 CAD 草稿，再生成键位外形边框。',true);return;}remember();state.options.outline='contour';state.options.margin=2.9;state.options.outlinePoints=[];state.options.outlineSource=null;changed();status('已按键位外形生成边框，外扩 2.9 mm；圆角半径可在上方设置。');};
+$('fixContourOutline').onclick=()=>$('contourPreset').click();
 $('autoOutline').onclick=autoOutline;$('drawOutline').onclick=startOutlineDraft;$('finishOutline').onclick=finishOutlineDraft;$('cancelOutline').onclick=clearOutline;
 $('switchType').onchange=()=>{
   const value=$('switchType').value;
@@ -573,9 +587,10 @@ document.addEventListener('keydown',e=>{
   if(e.key==='Alt'&&pointer?.mode==='move'){e.preventDefault();moveSelection(pointer.latest,true);return;}
   const editing=['INPUT','TEXTAREA','SELECT'].includes(document.activeElement?.tagName);
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='s'){e.preventDefault();$('saveProject').click();return;}
-  if(editing||$('helpDialog').open||$('firmwarePreviewDialog').open)return;
+  if(editing||document.querySelector('dialog[open]'))return;
   if(pointer?.mode==='move'&&(['Backspace','Delete','ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)||((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z')))finishMove();
   if((e.metaKey||e.ctrlKey)&&e.key.toLowerCase()==='z'){e.preventDefault();e.shiftKey?redo():undo();return;}
+  if(view==='plate'&&window.WorkshopCAD?.keydown(e))return;
   if(view==='layout'&&(e.key==='Backspace'||e.key==='Delete')&&selected.size){e.preventDefault();deleteKeys();return;}
   if(view==='layout'&&['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(e.key)&&selected.size){e.preventDefault();remember();const step=e.shiftKey?.25:.05;for(const k of state.keys)if(selected.has(k.id)){k.x+=e.key==='ArrowLeft'?-step:e.key==='ArrowRight'?step:0;k.y+=e.key==='ArrowUp'?-step:e.key==='ArrowDown'?step:0;}changed();}
 });
@@ -604,6 +619,7 @@ function migrateFirmware(oldKeys,newKeys,oldImage,newImage){
 function syncFirmware(){
   const f=state.firmware,enabled=!!f,split=FW.isSplit(f);if(!split)firmwareSide='left';const cfg=f?FW.sideConfig(f,firmwareSide):null;
   $('firmwareTarget').value=f?.target||'';$('firmwareStatus').textContent=f?.target?.toUpperCase()||'未启用';
+  $('qmkCompatHelp').hidden=!enabled||f?.target!=='qmk';
   for(const [id,prop] of [['firmwareController','controller'],['firmwareId','id'],['firmwareDisplayName','displayName'],['firmwareRows','rows'],['firmwareCols','cols'],['firmwareDiode','diode']]){$(id).value=f?.[prop]??'';$(id).disabled=!enabled||busy;}
   const usb=FW.usbIds(f);
   for(const [id,prop] of [['firmwareVid','vid'],['firmwarePid','pid']]){$(id).value=enabled?usb[prop]:'';$(id).disabled=!enabled||busy;$(id).setAttribute('aria-invalid',String(enabled&&FW.normalizeUsbId(usb[prop])===null));}
@@ -660,6 +676,8 @@ function syncFirmware(){
   for(const [items,tone] of [[result.errors,'error'],[result.warnings,'warning']])for(const issue of items){const b=document.createElement('button');b.className='firmware-issue '+tone;b.textContent=(tone==='error'?'● ':'△ ')+issue.msg;if(issue.keyId){b.dataset.key=issue.keyId;b.onclick=()=>{selected=new Set(issue.keyIds||[issue.keyId]);const key=state.keys.find(k=>k.id===issue.keyId);if(key){const {w,h}=viewport();camera.x=w/2-key.x*camera.scale;camera.y=h/2-key.y*camera.scale;}inspector();draw();};}checks.append(b);}
   if(!result.errors.length&&!result.warnings.length)checks.textContent='检查通过，可以导出。';
   $('previewFirmware').disabled=!!result.errors.length||busy;$('exportFirmware').disabled=!!result.errors.length||busy;
+  for(const id of ['previewWiringDiagramQuick','exportWiringSVG','exportWiringPNG'])$(id).disabled=!enabled||busy;
+  $('openKiCad').disabled=busy;
   $('uploadGitHub').disabled=busy;
 }
 function firmwareSelection(){
@@ -728,6 +746,14 @@ $('previewFirmware').onclick=()=>{const generated=FW.generate(state);if(generate
 $('firmwareFileList').onchange=()=>$('firmwarePreview').textContent=firmwareFiles[Number($('firmwareFileList').value)]?.content||'';
 $('closeFirmwarePreview').onclick=()=>$('firmwarePreviewDialog').close();
 $('exportFirmware').onclick=()=>{const generated=FW.generate(state);if(generated.errors.length){status(generated.errors[0].msg,true);return;}if(native)send('saveFolder',{name:generated.root,files:generated.files});else status('请在键盘工坊 App 中导出固件仓库。',true);};
+function wiringSvg(){if(!state.firmware){status('请先选择固件目标，再生成矩阵接线图。',true);return null;}try{return FW.wiringDiagram(state);}catch(error){status('接线图生成失败：'+error.message,true);return null;}}
+function wiringName(ext){return `${fileName()}-矩阵接线图.${ext}`;}
+function showWiringDiagram(svgOverride){const svg=svgOverride||wiringSvg();if(!svg)return false;const blob=new Blob([svg],{type:'image/svg+xml;charset=utf-8'});if(wiringPreviewURL)URL.revokeObjectURL(wiringPreviewURL);wiringPreviewURL=URL.createObjectURL(blob);$('wiringDiagramImage').src=wiringPreviewURL;$('wiringDiagramCaption').textContent='图中按键、R/C 地址、行列 GPIO、二极管方向和分体通信均来自当前固件设置；橙色区域表示仍需按实物核对。';$('wiringDiagramDialog').showModal();return true;}
+function exportWiringSVG(){const svg=wiringSvg();if(!svg)return;const name=wiringName('svg');if(native)send('save',{name,content:svg});else save(name,svg);}
+function renderWiringPNG(svg){return new Promise((resolve,reject)=>{const blob=new Blob([svg],{type:'image/svg+xml;charset=utf-8'}),url=URL.createObjectURL(blob),img=new Image();const fail=error=>{URL.revokeObjectURL(url);reject(error instanceof Error?error:Error('接线图无法转换为 PNG。'));};img.onload=()=>{try{const scale=Math.min(2,4096/Math.max(img.naturalWidth,1),4096/Math.max(img.naturalHeight,1)),canvasOut=document.createElement('canvas');canvasOut.width=Math.max(1,Math.round(img.naturalWidth*scale));canvasOut.height=Math.max(1,Math.round(img.naturalHeight*scale));const context=canvasOut.getContext('2d');if(!context)throw Error('PNG 导出失败。');context.fillStyle='#fff';context.fillRect(0,0,canvasOut.width,canvasOut.height);context.drawImage(img,0,0,canvasOut.width,canvasOut.height);canvasOut.toBlob(file=>{if(!file){fail(Error('PNG 导出失败。'));return;}const reader=new FileReader();reader.onload=()=>{URL.revokeObjectURL(url);resolve({blob:file,dataURL:String(reader.result)});};reader.onerror=()=>fail(Error('PNG 导出失败。'));reader.readAsDataURL(file);},'image/png');}catch(error){fail(error);}};img.onerror=()=>fail(Error('接线图无法转换为 PNG。'));img.src=url;});}
+window.WorkshopWiring={preview:showWiringDiagram,renderPNG:renderWiringPNG};
+function exportWiringPNG(){const svg=wiringSvg();if(!svg)return;renderWiringPNG(svg).then(({blob,dataURL})=>{const name=wiringName('png');if(native)send('saveImage',{name,data:dataURL.split(',')[1]||''});else{const href=URL.createObjectURL(blob),a=document.createElement('a');a.href=href;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(href),1000);status('已导出 '+name);}}).catch(error=>status(error.message||'PNG 导出失败。',true));}
+$('previewWiringDiagramQuick').onclick=()=>showWiringDiagram();$('exportWiringSVG').onclick=exportWiringSVG;$('exportWiringPNG').onclick=exportWiringPNG;$('closeWiringDiagram').onclick=()=>{$('wiringDiagramDialog').close();if(wiringPreviewURL){URL.revokeObjectURL(wiringPreviewURL);wiringPreviewURL=null;}$('wiringDiagramImage').removeAttribute('src');};
 function githubReceive(payload){
   const previous=githubState.login,oldSHA=githubState.job?.sha;githubState={connected:false,busy:false,repositories:[],...payload};
   if(previous!==githubState.login)$('githubRepository').value='';
@@ -745,7 +771,7 @@ function githubRender(){
   if([...list.options].some(o=>o.value===previous))list.value=previous;
   const create=!list.value;$('githubNewFields').hidden=!create;
   for(const id of ['githubRepository','githubRepoName','githubPrivate'])$(id).disabled=locked||!g.connected||!githubPending;
-  $('githubUploadSummary').textContent=githubPending?`${githubPending.target.toUpperCase()} · ${githubPending.keyboard} · ${githubPending.files.length} 个文件。上传当前配置的快照，包含编译流程和接线说明。`:'当前配置有错误，请关闭窗口完成配置后重新打开。仍可查看上次编译结果。';
+  $('githubUploadSummary').textContent=githubPending?`${githubPending.target.toUpperCase()} · ${githubPending.keyboard} · ${githubPending.files.length} 个文件。上传当前配置快照${githubPending.target==='qmk'?'，Actions 将分别编译 VIA 与 Vial 固件':'，包含编译流程和接线说明'}。`:'当前配置有错误，请关闭窗口完成配置后重新打开。仍可查看上次编译结果。';
   const name=create?$('githubRepoName').value.trim():list.value,valid=/^[A-Za-z0-9][A-Za-z0-9_-]{0,99}$/.test(name);
   $('githubPublish').disabled=locked||!g.connected||!githubPending||!valid;
   $('githubPublish').textContent=locked?'正在处理…':create?'上传并开始编译':'更新仓库并编译';

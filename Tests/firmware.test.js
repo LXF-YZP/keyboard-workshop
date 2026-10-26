@@ -14,6 +14,21 @@ test('legacy projects retain target USB defaults without adding saved fields',()
     assert.equal(JSON.stringify(p),before);
   }
 });
+test('matrix wiring SVG reflects actual pins, key addresses and COL2ROW direction with escaped legends',()=>{
+  const p=project();p.name='Board & <test>';p.keys[0].label='A & B';
+  const svg=FW.wiringDiagram(p);
+  for(const term of ['<svg xmlns="http://www.w3.org/2000/svg"','Board &amp; &lt;test&gt;','COL2ROW','A3 / 21','RX / D0','R1 / C2','A &amp; B','二极管阴极标记朝 R','接线参考图'])assert.ok(svg.includes(term),term);
+  assert.ok(!svg.includes('A & B'));
+  p.firmware.diode='row2col';const reversed=FW.wiringDiagram(p);
+  assert.ok(reversed.includes('ROW2COL')&&reversed.includes('二极管阴极标记朝 C'));
+  assert.notEqual(reversed,svg);
+});
+test('matrix wiring SVG preserves incomplete assignments as explicit draft callouts',()=>{
+  const p=project();p.firmware.rowPins=[null];p.firmware.colPins=[null,null,null];p.keys[0].fw.row=null;p.keys[0].label='未定位键';
+  const svg=FW.wiringDiagram(p);
+  for(const term of ['草稿图','GPIO 未分配','未定位 / 超出矩阵的按键','未定位键','未分配'])assert.ok(svg.includes(term),term);
+  assert.ok(!svg.includes('firmware.errors'));
+});
 test('custom USB IDs normalize, survive project round trip and export for both targets',()=>{
   for(const target of ['qmk','zmk']){
     const p=project(target);p.firmware.usb={vid:' fEd ',pid:'0Xa'};
@@ -62,6 +77,42 @@ test('RP2040 legacy connector values survive save/reopen, board switch and GPIO 
   out.firmware.controller='promicro_avr';out.firmware.controller='promicro_rp2040';assert.deepEqual(out.firmware.rowPins,[18,20]);
 });
 test('QMK JSON and all outputs use sorted matrix order; decal is excluded',()=>{const p=project(),keyboard=JSON.parse(file(p,'keyboard.json')),keymap=JSON.parse(file(p,'keymap.json'));assert.deepEqual(keyboard.layouts.LAYOUT.layout.map(k=>k.matrix),[[0,0],[1,2]]);assert.deepEqual(keymap.layers,[['KC_A','KC_B'],['MO(0)','KC_TRNS']]);const z=project('zmk'),overlay=file(z,'.overlay'),bindings=file(z,'.keymap');assert.match(overlay,/map = <RC\(0, 0\) RC\(1, 2\)>/);assert.equal((overlay.match(/<&key_physical_attrs/g)||[]).length,2);assert.match(bindings,/bindings = <&kp A &kp B>/);});
+test('QMK export includes valid VIA and Vial layout definitions and firmware support',()=>{
+  const p=project(),generated=FW.generate(p),files=new Map(generated.files.map(f=>[f.path,f.content]));
+  const read=suffix=>JSON.parse(generated.files.find(f=>f.path.endsWith(suffix)).content);
+  const keyboard=read('/keyboard.json'),via=read('/via.json'),vial=read('/keymaps/vial/vial.json');
+  assert.equal(keyboard.features.via,true);assert.match(files.get('keyboards/handwired/test_board/rules.mk'),/^VIA_ENABLE = yes/m);
+  assert.deepEqual(via.matrix,{rows:2,cols:3});assert.equal(via.vendorId,'0xFEED');assert.equal(via.productId,'0x0000');
+  assert.deepEqual(vial,via);assert.deepEqual(via.layouts.keymap.map(row=>row.at(-1)),['0,0','1,2']);
+  const parsed=KB.parseKLE(JSON.stringify(via.layouts.keymap)).keys;
+  for(const item of keyboard.layouts.LAYOUT.layout){
+    const key=parsed.find(k=>k.label===item.matrix.join(','));assert.ok(key,'VIA key '+item.matrix);
+    assert.ok(Math.abs(key.x-(item.r===undefined?item.x+item.w/2:item.rx))<.001);
+    assert.ok(Math.abs(key.y-(item.r===undefined?item.y+item.h/2:item.ry))<.001);
+    assert.equal(key.angle,item.r||0);
+  }
+  const vialKeymap=files.get('keyboards/handwired/test_board/keymaps/vial/keymap.c');
+  assert.match(vialKeymap,/\[0\] = LAYOUT\([\s\S]*KC_A,[\s\S]*KC_B/);assert.match(vialKeymap,/\[1\] = LAYOUT\([\s\S]*MO\(0\),[\s\S]*KC_TRNS/);
+  const config=files.get('keyboards/handwired/test_board/keymaps/vial/config.h');
+  assert.match(config,/VIAL_KEYBOARD_UID \{(?:0x[0-9A-F]{2}, ){7}0x[0-9A-F]{2}\}/);
+  assert.match(config,/VIAL_UNLOCK_COMBO_ROWS \{ \d+, \d+ \}/);assert.match(config,/VIAL_UNLOCK_COMBO_COLS \{ \d+, \d+ \}/);
+  assert.match(files.get('keyboards/handwired/test_board/keymaps/vial/rules.mk'),/VIAL_ENABLE = yes/);
+  assert.match(files.get('.github/workflows/build.yml'),/Compile Vial firmware/);
+});
+test('split VIA/Vial definitions use the combined matrix row addresses',()=>{
+  const p=project();p.firmware.controller='rp2040';p.firmware.rows=1;p.firmware.cols=2;p.firmware.rowPins=[4];p.firmware.colPins=[5,6];
+  FW.enableSplit(p.firmware,true);p.firmware.split.serialPin=10;p.firmware.split.right={rowPins:[7],colPins:[8,9]};
+  p.keys[0].fw={side:'left',row:0,col:0,bindings:[{t:'kc',k:'A',m:[]},{t:'trans'}]};
+  p.keys[1].fw={side:'right',row:0,col:0,bindings:[{t:'kc',k:'B',m:[]},{t:'trans'}]};
+  const generated=FW.generate(p);assert.deepEqual(generated.errors,[]);
+  const get=suffix=>JSON.parse(generated.files.find(f=>f.path.endsWith(suffix)).content);
+  for(const suffix of ['/via.json','/keymaps/vial/vial.json']){
+    const def=get(suffix);assert.deepEqual(def.matrix,{rows:2,cols:2});
+    assert.deepEqual(def.layouts.keymap.map(row=>row.at(-1)),['0,0','1,0']);
+  }
+  const config=generated.files.find(f=>f.path.endsWith('/keymaps/vial/config.h')).content;
+  assert.match(config,/VIAL_UNLOCK_COMBO_ROWS \{ 0, 1 \}/);
+});
 for(const angle of [0,15,-30,90])test(`physical coordinates and nonnegative placement at ${angle} degrees`,()=>{const p=project();p.keys[0].angle=angle;p.keys[0].x=-4;p.keys[0].y=-2;p.keys[0].w=2;const attrs=JSON.parse(file(p,'keyboard.json')).layouts.LAYOUT.layout;for(const a of attrs)for(const prop of ['x','y','rx','ry'])if(prop in a)assert.ok(a[prop]>=0);const b=attrs[1];if(angle){assert.equal(b.r,angle);assert.ok(Math.abs(b.rx-b.x-1)<=.001);assert.ok(Math.abs(b.ry-b.y-.5)<=.001);}else assert.ok(!('r'in b));for(const a of attrs)assert.equal(Math.round(a.x*1000),a.x*1000);});
 test('ZMK negative angle is parenthesized and physical units are 1/100',()=>{const p=project('zmk');p.keys[0].angle=-30;const text=file(p,'.overlay');assert.match(text,/<&key_physical_attrs 100 100 \d+ \d+ \(-3000\) \d+ \d+>/);});
 const actions=[['none','KC_NO','&none'],['trans','KC_TRNS','&trans'],['mo','MO(1)','&mo 1'],['tg','TG(1)','&tog 1'],['to','TO(1)','&to 1']];
@@ -75,7 +126,7 @@ const invalids=[
 for(const [name,mutate,msg]of invalids)test('strict validation: '+name,()=>{const p=project();mutate(p);assert.ok(FW.validate(p).errors.some(e=>e.msg.includes(msg)),name);assert.equal(FW.generate(p).files.length,0);});
 test('warnings for none, unknown text, matrix gaps and ASCII name',()=>{const p=project();p.firmware.displayName='键盘';p.keys[0].label='Fn';p.keys[0].fw.bindings[0]={t:'none'};const warnings=FW.validate(p).warnings.map(e=>e.msg).join('\n');for(const term of ['没有功能','未能识别','空位','ASCII'])assert.ok(warnings.includes(term));});
 test('tolerant import, independent nested data and default upper layers',()=>{const p=project();p.firmware.id='../bad';p.firmware.layers=[{name:'Base'},{name:'Lower'}];p.firmware.rowPins=[null,21];p.keys[0].fw.bindings=[{t:'kc',k:'A',m:['LCTL','x','LCTL']},{t:'mo',l:999}];const out=FW.normalizeProject(p);assert.equal(out.firmware.id,'my_board');assert.deepEqual(out.firmware.rowPins,[null,21]);assert.deepEqual(out.keys[0].fw.bindings,[{t:'kc',k:'A',m:['LCTL']},{t:'trans'}]);out.keys[0].fw.bindings[0].m.push('LSFT');assert.equal(p.keys[0].fw.bindings[0].m.length,3);assert.equal(FW.normalizeProject({keys:[KB.key()]}).firmware,null);assert.equal(FW.normalizeProject({firmware:{target:'zmk',layers:[]},keys:[]}).firmware.layers.length,1);});
-test('QMK workflow locks source, recursively checks submodules and uploads all formats; RP2040 converter',()=>{const p=project();p.firmware.controller='promicro_rp2040';const workflow=file(p,'build.yml');for(const text of [FW.QMK_VERSION,'submodules: recursive','CONVERT_TO=sparkfun_pm2040','*.hex','*.uf2','*.bin','push, pull_request','contents: read','pip install -r qmk_firmware/requirements.txt','qmk config user.qmk_home="$GITHUB_WORKSPACE/qmk_firmware"'])assert.ok(workflow.includes(text));});
+test('QMK workflow pins both toolchains and builds VIA and Vial firmware artifacts',()=>{const p=project();p.firmware.controller='promicro_rp2040';const workflow=file(p,'build.yml');for(const text of [FW.QMK_VERSION,FW.VIAL_QMK_VERSION,'submodules: recursive','CONVERT_TO=sparkfun_pm2040','Compile VIA firmware','Compile Vial firmware','repository: vial-kb/vial-qmk','dist/via','dist/vial','push, pull_request','contents: read','pip install -r qmk_firmware/requirements.txt','qmk config user.qmk_home="$GITHUB_WORKSPACE/qmk_firmware"'])assert.ok(workflow.includes(text),text);});
 test('ZMK pull direction, escaped names, modules and west imports',()=>{const p=project('zmk');p.firmware.displayName='My "Board"';p.firmware.layers[0].name='A " B \\ C';let overlay=file(p,'.overlay');assert.match(overlay,/row-gpios = <&pro_micro 21 \(GPIO_ACTIVE_HIGH \| GPIO_PULL_DOWN\)>, <&pro_micro 20/);assert.match(overlay,/col-gpios = <&pro_micro 0 GPIO_ACTIVE_HIGH>, <&pro_micro 1/);assert.ok(file(p,'.keymap').includes('A \\" B \\\\ C'));assert.ok(file(p,'west.yml').includes('import: app/west.yml'));assert.equal(file(p,'module.yml'),'build:\n  settings:\n    board_root: .\n');p.firmware.diode='row2col';overlay=file(p,'.overlay');assert.match(overlay,/col-gpios = <&pro_micro 0 \(GPIO_ACTIVE_HIGH \| GPIO_PULL_DOWN\)>/);});
 test('42 key sample generates both repositories with consistent counts and excluded TPS65',()=>{const raw=KB.parseKLE(fs.readFileSync(path.join(__dirname,'../示例/42键-TPS65.kle.json'),'utf8')).keys;for(const target of ['qmk','zmk']){const p=project(target);p.keys=raw;const matrix=FW.suggestMatrix(raw);p.firmware.rows=Math.max(...matrix.map(m=>m.row))+1;p.firmware.cols=Math.max(...matrix.map(m=>m.col))+1;p.firmware.rowPins=FW.GPIO.slice(0,p.firmware.rows);p.firmware.colPins=FW.GPIO.slice(p.firmware.rows,p.firmware.rows+p.firmware.cols);for(const m of matrix)p.keys.find(k=>k.id===m.id).fw={row:m.row,col:m.col,bindings:[FW.inferBinding(p.keys.find(k=>k.id===m.id),raw),{t:'trans'}]};const result=FW.generate(p);assert.deepEqual(result.errors,[]);assert.ok(!result.files.some(f=>f.path.endsWith('.overlay')&&f.content.includes('TPS65')));if(target==='qmk')assert.equal(JSON.parse(file(p,'keymap.json')).layers[0].length,42);else assert.equal((file(p,'.overlay').match(/<&key_physical_attrs/g)||[]).length,42);}});
 test('ZMK golden output catches ordering, units, syntax and escaping changes',()=>{const p=project('zmk');p.keys[0].angle=-30;const generated=FW.generate(p).files.filter(f=>/overlay$|keymap$/.test(f.path));const snapshot=path.join(__dirname,'fixtures/firmware-zmk.json');if(process.env.UPDATE_FIRMWARE_SNAPSHOT==='1')fs.writeFileSync(snapshot,JSON.stringify(generated,null,2)+'\n');assert.deepEqual(generated,JSON.parse(fs.readFileSync(snapshot,'utf8')));});
